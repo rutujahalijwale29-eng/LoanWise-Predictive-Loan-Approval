@@ -1,3 +1,4 @@
+
 import { useState } from "react";
 import "./App.css";
 import AdminDashboard from "./AdminDashboard";
@@ -5,14 +6,14 @@ import AdminDashboard from "./AdminDashboard";
 const API = "http://127.0.0.1:8000";
 
 const initialLoan = {
-  Gender: "Male",
-  Married: "Yes",
+  Gender: "Female",
+  Married: "No",
   Dependents: "0",
   Education: "Graduate",
   Self_Employed: "No",
-  ApplicantIncome: "5000",
+  ApplicantIncome: "15000",
   CoapplicantIncome: "2000",
-  LoanAmount: "150",
+  LoanAmount: "2500",
   Loan_Amount_Term: "360",
   Credit_History: "1",
   Property_Area: "Urban",
@@ -52,6 +53,7 @@ function App() {
 
   const [loan, setLoan] = useState(initialLoan);
   const [result, setResult] = useState("");
+  const [applicationId, setApplicationId] = useState(null);
   const [message, setMessage] = useState("");
   const [messageType, setMessageType] = useState("error");
   const [loading, setLoading] = useState(false);
@@ -63,24 +65,26 @@ function App() {
   }
 
   function updateAuth(event) {
-    setAuthForm({
-      ...authForm,
+    setAuthForm((previous) => ({
+      ...previous,
       [event.target.name]: event.target.value,
-    });
+    }));
   }
 
   function updateLoan(event) {
-    setLoan({
-      ...loan,
+    setLoan((previous) => ({
+      ...previous,
       [event.target.name]: event.target.value,
-    });
+    }));
   }
 
   // Registration and login
   async function handleAuth(event) {
     event.preventDefault();
+
     setLoading(true);
     setMessage("");
+    setMessageType("error");
 
     const isRegister = page === "register";
 
@@ -124,7 +128,12 @@ function App() {
         setMessage("Registration successful. Please log in.");
         setPage("login");
       } else {
-        // Save the token and user returned by the backend
+        if (!data.access_token || !data.user) {
+          throw new Error(
+            "Login response did not contain a token and user."
+          );
+        }
+
         sessionStorage.setItem(
           "loanwise_token",
           data.access_token
@@ -137,10 +146,10 @@ function App() {
 
         setToken(data.access_token);
         setUser(data.user);
+        setResult("");
+        setApplicationId(null);
         setMessage("");
 
-        // Admin accounts open the admin dashboard.
-        // Regular accounts open the prediction page.
         setPage(
           data.user.role === "admin" ? "admin" : "predict"
         );
@@ -155,14 +164,30 @@ function App() {
     }
   }
 
-  // Loan prediction
+  // Loan prediction with authentication and improved error handling
   async function handlePrediction(event) {
     event.preventDefault();
+
+    const savedToken = sessionStorage.getItem("loanwise_token");
+
+    if (!savedToken) {
+      setToken("");
+      setUser(null);
+      setResult("");
+      setApplicationId(null);
+      setMessageType("error");
+      setMessage(
+        "Please log in before submitting a loan application."
+      );
+      setPage("login");
+      return;
+    }
 
     setLoading(true);
     setMessage("");
     setMessageType("error");
     setResult("");
+    setApplicationId(null);
 
     const payload = {
       ...loan,
@@ -178,28 +203,68 @@ function App() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          Authorization: `Bearer ${savedToken}`,
         },
         body: JSON.stringify(payload),
       });
 
       const data = await response.json();
 
+      if (response.status === 401) {
+        sessionStorage.removeItem("loanwise_token");
+        sessionStorage.removeItem("loanwise_user");
+
+        setToken("");
+        setUser(null);
+        setResult("");
+        setApplicationId(null);
+        setPage("login");
+
+        throw new Error(
+          "Your session expired. Please log in again."
+        );
+      }
+
       if (!response.ok) {
         throw new Error(
           typeof data.detail === "string"
             ? data.detail
-            : JSON.stringify(data.detail || data)
+            : JSON.stringify(data.detail ?? data)
         );
       }
 
-      const prediction = String(data.prediction);
+      const rawPrediction = data.prediction;
+
+      if (
+        rawPrediction === undefined ||
+        rawPrediction === null
+      ) {
+        throw new Error(
+          `The API response has no prediction field: ${JSON.stringify(data)}`
+        );
+      }
+
+      const prediction = String(rawPrediction)
+        .trim()
+        .toUpperCase();
 
       if (!["Y", "N"].includes(prediction)) {
-        throw new Error("The API returned an unexpected prediction.");
+        throw new Error(
+          `Unexpected prediction value: ${JSON.stringify(data)}`
+        );
       }
 
       setResult(prediction);
+      setApplicationId(data.application_id ?? null);
+      setMessageType("success");
+
+      setMessage(
+        data.application_id
+          ? `Prediction saved successfully. Application ID: ${data.application_id}`
+          : "Prediction generated successfully."
+      );
     } catch (error) {
+      setMessageType("error");
       setMessage(error.message || "Prediction failed.");
     } finally {
       setLoading(false);
@@ -214,16 +279,21 @@ function App() {
     setToken("");
     setUser(null);
     setResult("");
+    setApplicationId(null);
     setMessage("");
     setMessageType("error");
     setPage("home");
   }
 
   const selectFields = [
-    ["Gender", "Gender", ["Male", "Female"]],
-    ["Married", "Marital Status", ["Yes", "No"]],
+    ["Gender", "Gender", ["Female", "Male"]],
+    ["Married", "Marital Status", ["No", "Yes"]],
     ["Dependents", "Dependents", ["0", "1", "2", "3+"]],
-    ["Education", "Education", ["Graduate", "Not Graduate"]],
+    [
+      "Education",
+      "Education",
+      ["Graduate", "Not Graduate"],
+    ],
     ["Self_Employed", "Self Employed", ["No", "Yes"]],
     [
       "Credit_History",
@@ -236,7 +306,7 @@ function App() {
     [
       "Property_Area",
       "Property Area",
-      ["Urban", "Semiurban", "Rural"],
+      ["Rural", "Semiurban", "Urban"],
     ],
   ];
 
@@ -247,20 +317,18 @@ function App() {
     ["Loan_Amount_Term", "Loan Term (months)", 0.01],
   ];
 
-  // IMPORTANT:
-  // This must appear before the main website return.
- if (page === "admin" && token && user?.role === "admin") {
-  return (
-    <AdminDashboard
-      user={user}
-      token={token}
-      onLogout={logout}
-      onGoToPrediction={() => goTo("predict")}
-    />
-  );
-}
+  // Admin dashboard
+  if (page === "admin" && token && user?.role === "admin") {
+    return (
+      <AdminDashboard
+        user={user}
+        token={token}
+        onLogout={logout}
+        onGoToPrediction={() => goTo("predict")}
+      />
+    );
+  }
 
-  // Main website
   return (
     <main className="page">
       <header className="topbar">
@@ -433,7 +501,9 @@ function App() {
             {message && (
               <div
                 className={`message ${messageType}`}
-                role={messageType === "error" ? "alert" : "status"}
+                role={
+                  messageType === "error" ? "alert" : "status"
+                }
               >
                 {message}
               </div>
@@ -448,7 +518,9 @@ function App() {
                 type="button"
                 className="text-button"
                 onClick={() =>
-                  goTo(page === "register" ? "login" : "register")
+                  goTo(
+                    page === "register" ? "login" : "register"
+                  )
                 }
               >
                 {page === "register" ? "Login" : "Register"}
@@ -467,8 +539,7 @@ function App() {
             <h1>Loan prediction</h1>
 
             <p className="hero-text">
-              Enter the applicant's information to generate
-              a prediction.
+              Enter the applicant's information to generate a prediction.
             </p>
           </section>
 
@@ -546,12 +617,16 @@ function App() {
               </button>
 
               <p className="privacy-note">
-                This prediction is an estimate, not a bank's
-                final decision.
+                This prediction is an estimate, not a bank's final decision.
               </p>
 
               {message && (
-                <div className="message error" role="alert">
+                <div
+                  className={`message ${messageType}`}
+                  role={
+                    messageType === "error" ? "alert" : "status"
+                  }
+                >
                   {message}
                 </div>
               )}
@@ -578,6 +653,10 @@ function App() {
                       ? "The model predicts a positive outcome."
                       : "The model predicts a negative outcome."}
                   </p>
+
+                  {applicationId !== null && (
+                    <p>Application ID: {applicationId}</p>
+                  )}
                 </div>
               )}
             </form>
@@ -588,9 +667,9 @@ function App() {
               <h3>About LoanWise</h3>
 
               <p>
-                LoanWise uses a trained machine-learning model
-                to estimate a possible loan outcome from the
-                details provided.
+                LoanWise uses a trained machine-learning model to
+                estimate a possible loan outcome from the details
+                provided.
               </p>
 
               <div className="info-divider" />
@@ -598,9 +677,9 @@ function App() {
               <h3>Important note</h3>
 
               <p>
-                A prediction is not a guarantee of approval
-                or rejection. The bank makes the final decision
-                after its own checks.
+                A prediction is not a guarantee of approval or
+                rejection. The bank makes the final decision after
+                its own checks.
               </p>
             </aside>
           </section>
