@@ -17,7 +17,10 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from backend.database import get_db_connection
 
 
+# --------------------------------------------------
 # Load settings
+# --------------------------------------------------
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
 
@@ -28,7 +31,10 @@ router = APIRouter(prefix="/admin", tags=["Admin"])
 security = HTTPBearer()
 
 
-# Only logged-in, active administrators can use these routes
+# --------------------------------------------------
+# Verify administrator
+# --------------------------------------------------
+
 def require_admin(
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ):
@@ -98,7 +104,10 @@ def require_admin(
     return user
 
 
-# Dashboard summary statistics
+# --------------------------------------------------
+# Dashboard statistics
+# --------------------------------------------------
+
 @router.get("/stats")
 def dashboard_stats(admin=Depends(require_admin)):
     connection = None
@@ -108,16 +117,18 @@ def dashboard_stats(admin=Depends(require_admin)):
         connection = get_db_connection()
         cursor = connection.cursor(dictionary=True)
 
-        cursor.execute("SELECT COUNT(*) AS total_users FROM users")
+        cursor.execute(
+            "SELECT COUNT(*) AS total_users FROM users"
+        )
         user_stats = cursor.fetchone()
 
         cursor.execute(
             """
             SELECT
                 COUNT(*) AS total_applications,
-                COALESCE(SUM(prediction = 'Y'), 0)
+                COALESCE(SUM(prediction = '1'), 0)
                     AS predicted_approved,
-                COALESCE(SUM(prediction = 'N'), 0)
+                COALESCE(SUM(prediction = '0'), 0)
                     AS predicted_rejected
             FROM loan_applications
             """
@@ -151,7 +162,10 @@ def dashboard_stats(admin=Depends(require_admin)):
             connection.close()
 
 
+# --------------------------------------------------
 # Registered users
+# --------------------------------------------------
+
 @router.get("/users")
 def list_users(
     limit: int = Query(default=50, ge=1, le=100),
@@ -166,15 +180,22 @@ def list_users(
 
         cursor.execute(
             """
-            SELECT id, full_name, email, role, is_active, created_at
+            SELECT
+                id,
+                full_name,
+                email,
+                role,
+                is_active
             FROM users
-            ORDER BY created_at DESC
+            ORDER BY id DESC
             LIMIT %s
             """,
             (limit,),
         )
 
-        return {"users": cursor.fetchall()}
+        users = cursor.fetchall()
+
+        return {"users": users}
 
     except mysql.connector.Error as exc:
         raise HTTPException(
@@ -190,7 +211,10 @@ def list_users(
             connection.close()
 
 
-# Recent loan applications
+# --------------------------------------------------
+# All loan applications
+# --------------------------------------------------
+
 @router.get("/applications")
 def list_applications(
     limit: int = Query(default=50, ge=1, le=100),
@@ -208,20 +232,23 @@ def list_applications(
             SELECT
                 a.id,
                 a.user_id,
-                COALESCE(u.full_name, 'Unknown user') AS applicant_name,
+                COALESCE(u.full_name, 'Unknown user')
+                    AS applicant_name,
                 a.ApplicantIncome,
                 a.LoanAmount,
                 a.prediction,
                 a.created_at
-            FROM loan_applications a
-            LEFT JOIN users u ON a.user_id = u.id
-            ORDER BY a.created_at DESC
+            FROM loan_applications AS a
+            LEFT JOIN users AS u ON a.user_id = u.id
+            ORDER BY a.created_at DESC, a.id DESC
             LIMIT %s
             """,
             (limit,),
         )
 
-        return {"applications": cursor.fetchall()}
+        applications = cursor.fetchall()
+
+        return {"applications": applications}
 
     except mysql.connector.Error as exc:
         raise HTTPException(

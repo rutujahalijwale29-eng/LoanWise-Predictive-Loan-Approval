@@ -27,17 +27,20 @@ from backend.admin import router as admin_router
 
 app = FastAPI(title="LoanWise API")
 
-# Register routers only once
 app.include_router(auth_router)
 app.include_router(admin_router)
 
-# Allow the React frontend to communicate with FastAPI
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:5173",
         "http://localhost:5174",
+        "http://localhost:5175",
         "http://localhost:5176",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:5174",
+        "http://127.0.0.1:5175",
+        "http://127.0.0.1:5176",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -127,7 +130,7 @@ def get_current_user_id(
 
 # --------------------------------------------------
 # Categorical value mappings
-# These must match model training preprocessing
+# Must match model training preprocessing
 # --------------------------------------------------
 
 LABEL_MAPS = {
@@ -260,7 +263,7 @@ def model_info():
 
 # --------------------------------------------------
 # Loan prediction endpoint
-# Requires login and saves the application in MySQL
+# One application record per user
 # --------------------------------------------------
 
 @app.post("/predict")
@@ -289,7 +292,7 @@ def predict(
     # Generate prediction
     prediction = str(model.predict(input_data)[0])
 
-    # Save prediction and application to MySQL
+    # Save or update the user's existing application
     connection = None
     cursor = None
 
@@ -297,52 +300,112 @@ def predict(
         connection = get_db_connection()
         cursor = connection.cursor()
 
+        # Check whether this user already has an application
         cursor.execute(
             """
-            INSERT INTO loan_applications (
-                user_id,
-                Gender,
-                Married,
-                Dependents,
-                Education,
-                Self_Employed,
-                ApplicantIncome,
-                CoapplicantIncome,
-                LoanAmount,
-                Loan_Amount_Term,
-                Credit_History,
-                Property_Area,
-                prediction
-            )
-            VALUES (
-                %s, %s, %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s, %s
-            )
+            SELECT id
+            FROM loan_applications
+            WHERE user_id = %s
+            ORDER BY id ASC
+            LIMIT 1
             """,
-            (
-                user_id,
-                application.Gender,
-                application.Married,
-                application.Dependents,
-                application.Education,
-                application.Self_Employed,
-                application.ApplicantIncome,
-                application.CoapplicantIncome,
-                application.LoanAmount,
-                application.Loan_Amount_Term,
-                int(application.Credit_History),
-                application.Property_Area,
-                prediction,
-            ),
+            (user_id,),
         )
 
-        application_id = cursor.lastrowid
+        existing_application = cursor.fetchone()
+
+        if existing_application:
+            # Update the existing application
+            application_id = existing_application[0]
+
+            cursor.execute(
+                """
+                UPDATE loan_applications
+                SET
+                    Gender = %s,
+                    Married = %s,
+                    Dependents = %s,
+                    Education = %s,
+                    Self_Employed = %s,
+                    ApplicantIncome = %s,
+                    CoapplicantIncome = %s,
+                    LoanAmount = %s,
+                    Loan_Amount_Term = %s,
+                    Credit_History = %s,
+                    Property_Area = %s,
+                    prediction = %s
+                WHERE id = %s AND user_id = %s
+                """,
+                (
+                    application.Gender,
+                    application.Married,
+                    application.Dependents,
+                    application.Education,
+                    application.Self_Employed,
+                    application.ApplicantIncome,
+                    application.CoapplicantIncome,
+                    application.LoanAmount,
+                    application.Loan_Amount_Term,
+                    int(application.Credit_History),
+                    application.Property_Area,
+                    prediction,
+                    application_id,
+                    user_id,
+                ),
+            )
+
+            message = "Prediction updated successfully"
+
+        else:
+            # Insert a new application for a user with no existing record
+            cursor.execute(
+                """
+                INSERT INTO loan_applications (
+                    user_id,
+                    Gender,
+                    Married,
+                    Dependents,
+                    Education,
+                    Self_Employed,
+                    ApplicantIncome,
+                    CoapplicantIncome,
+                    LoanAmount,
+                    Loan_Amount_Term,
+                    Credit_History,
+                    Property_Area,
+                    prediction
+                )
+                VALUES (
+                    %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s
+                )
+                """,
+                (
+                    user_id,
+                    application.Gender,
+                    application.Married,
+                    application.Dependents,
+                    application.Education,
+                    application.Self_Employed,
+                    application.ApplicantIncome,
+                    application.CoapplicantIncome,
+                    application.LoanAmount,
+                    application.Loan_Amount_Term,
+                    int(application.Credit_History),
+                    application.Property_Area,
+                    prediction,
+                ),
+            )
+
+            application_id = cursor.lastrowid
+            message = "Prediction generated and saved successfully"
+
         connection.commit()
 
         return {
             "application_id": application_id,
             "prediction": prediction,
-            "message": "Prediction generated and saved successfully",
+            "message": message,
         }
 
     except Error as exc:

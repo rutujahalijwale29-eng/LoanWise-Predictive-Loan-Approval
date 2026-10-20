@@ -60,28 +60,21 @@ function prettyDate(value) {
       });
 }
 
+
 function predictionLabel(row) {
   const raw = String(
     firstValue(
       row,
-      [
-        "prediction",
-        "status",
-        "loan_status",
-        "result",
-        "predicted_status",
-      ],
+      ["prediction", "status", "loan_status", "result", "predicted_status"],
       "Pending"
     )
-  ).toLowerCase();
+  ).trim().toLowerCase();
 
-  if (["y", "yes", "approved", "approve", "accepted"].includes(raw)) {
+  if (["1", "y", "yes", "approved", "approve", "accepted"].includes(raw)) {
     return "Approved";
   }
 
-  if (
-    ["n", "no", "rejected", "reject", "denied", "not approved"].includes(raw)
-  ) {
+  if (["0", "n", "no", "rejected", "reject", "denied", "not approved"].includes(raw)) {
     return "Rejected";
   }
 
@@ -89,6 +82,7 @@ function predictionLabel(row) {
     ? "Pending"
     : raw.charAt(0).toUpperCase() + raw.slice(1);
 }
+
 
 function StatusBadge({ value }) {
   const label =

@@ -164,7 +164,7 @@ function App() {
     }
   }
 
-  // Loan prediction with authentication and improved error handling
+  // Loan prediction
   async function handlePrediction(event) {
     event.preventDefault();
 
@@ -233,6 +233,7 @@ function App() {
         );
       }
 
+      // The backend may return a prediction as 1/0 or Y/N.
       const rawPrediction = data.prediction;
 
       if (
@@ -244,22 +245,29 @@ function App() {
         );
       }
 
-      const prediction = String(rawPrediction)
-        .trim()
-        .toUpperCase();
+      const raw = String(rawPrediction).trim().toUpperCase();
 
-      if (!["Y", "N"].includes(prediction)) {
+      let normalizedPrediction;
+
+      if (["1", "Y", "YES", "APPROVED", "APPROVE"].includes(raw)) {
+        normalizedPrediction = "Y";
+      } else if (
+        ["0", "N", "NO", "REJECTED", "REJECT", "DENIED"].includes(raw)
+      ) {
+        normalizedPrediction = "N";
+      } else {
         throw new Error(
           `Unexpected prediction value: ${JSON.stringify(data)}`
         );
       }
 
-      setResult(prediction);
+      setResult(normalizedPrediction);
       setApplicationId(data.application_id ?? null);
       setMessageType("success");
 
       setMessage(
-        data.application_id
+        data.application_id !== undefined &&
+        data.application_id !== null
           ? `Prediction saved successfully. Application ID: ${data.application_id}`
           : "Prediction generated successfully."
       );
@@ -289,11 +297,7 @@ function App() {
     ["Gender", "Gender", ["Female", "Male"]],
     ["Married", "Marital Status", ["No", "Yes"]],
     ["Dependents", "Dependents", ["0", "1", "2", "3+"]],
-    [
-      "Education",
-      "Education",
-      ["Graduate", "Not Graduate"],
-    ],
+    ["Education", "Education", ["Graduate", "Not Graduate"]],
     ["Self_Employed", "Self Employed", ["No", "Yes"]],
     [
       "Credit_History",
