@@ -1,5 +1,6 @@
 
 from pathlib import Path
+from typing import Literal
 
 import joblib
 import jwt
@@ -13,7 +14,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer
 
 from pydantic import BaseModel, Field
-from typing import Literal
 
 from backend.auth import (
     router as auth_router,
@@ -53,17 +53,22 @@ app.add_middleware(
 
 
 # --------------------------------------------------
-# Load the trained machine learning model
+# Load trained machine learning model
 # --------------------------------------------------
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 MODEL_PATH = BASE_DIR / "loan_model.joblib"
 
+if not MODEL_PATH.exists():
+    raise FileNotFoundError(
+        f"Trained model not found at: {MODEL_PATH}"
+    )
+
 model = joblib.load(MODEL_PATH)
 
 
 # --------------------------------------------------
-# Authentication: verify login token and user
+# Authentication
 # --------------------------------------------------
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
@@ -143,8 +148,8 @@ def get_current_user_id(
 
 
 # --------------------------------------------------
-# Categorical value mappings
-# Must match model training preprocessing
+# Categorical mappings
+# Must match the model's training preprocessing
 # --------------------------------------------------
 
 LABEL_MAPS = {
@@ -177,9 +182,14 @@ LABEL_MAPS = {
     },
 }
 
+CREDIT_HISTORY_MAP = {
+    "Bad": 0,
+    "Good": 1,
+}
+
 
 # --------------------------------------------------
-# Loan application input model
+# Loan application input validation
 # --------------------------------------------------
 
 class LoanApplication(BaseModel):
@@ -193,8 +203,8 @@ class LoanApplication(BaseModel):
     CoapplicantIncome: float = Field(ge=0)
     LoanAmount: float = Field(gt=0)
     Loan_Amount_Term: float = Field(gt=0)
-    Credit_History: Literal["Good", "Bad"]
 
+    Credit_History: Literal["Good", "Bad"]
     Property_Area: Literal["Rural", "Semiurban", "Urban"]
 
 
@@ -277,7 +287,7 @@ def model_info():
 
 # --------------------------------------------------
 # Loan prediction endpoint
-# Every prediction creates a separate history record
+# Each successful prediction creates a history record
 # --------------------------------------------------
 
 @app.post("/predict")
@@ -285,54 +295,61 @@ def predict(
     application: LoanApplication,
     user_id: int = Depends(get_current_user_id),
 ):
-    # Convert the validated Pydantic model into a DataFrame
+    # Preserve the original validated values for database storage
     application_data = application.model_dump()
+
+    # Prepare model input
     input_data = pd.DataFrame([application_data])
 
-    application_data = application.model_dump()
-input_data = pd.DataFrame([application_data])
+    # Convert categorical fields
+    for column, mapping in LABEL_MAPS.items():
+        value = str(input_data.at[0, column])
 
-# Convert categorical fields to the numeric values expected by the model
-for col, mapping in LABEL_MAPS.items():
-    value = str(input_data.at[0, col])
+        if value not in mapping:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Invalid value for {column}: {value}",
+            )
 
-    if value not in mapping:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Invalid value for {col}: {value}"
-        )
+        input_data[column] = input_data[column].map(mapping)
 
-    input_data[col] = input_data[col].map(mapping)
+    # Convert credit history
+    input_data["Credit_History"] = input_data[
+        "Credit_History"
+    ].map(CREDIT_HISTORY_MAP)
 
-# Convert Credit History: Good = 1, Bad = 0
-CREDIT_HISTORY_MAP = {"Bad": 0, "Good": 1}
-input_data["Credit_History"] = input_data["Credit_History"].map(
-    CREDIT_HISTORY_MAP
-)
-
-# Keep the model's expected feature order
-if hasattr(model, "feature_names_in_"):
-    input_data = input_data[list(model.feature_names_in_)]
-
-# Predict only after all conversions
-prediction_value = model.predict(input_data)[0]
-
-    # Match the feature order used during model training
+    # Ensure all expected model features exist
     if hasattr(model, "feature_names_in_"):
-        input_data = input_data[list(model.feature_names_in_)]
+        expected_features = list(model.feature_names_in_)
+        missing_features = [
+            feature
+            for feature in expected_features
+            if feature not in input_data.columns
+        ]
+
+        if missing_features:
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "Model feature configuration mismatch: "
+                    + ", ".join(missing_features)
+                ),
+            )
+
+        input_data = input_data[expected_features]
 
     # Generate prediction
     try:
         prediction_value = model.predict(input_data)[0]
         prediction = str(int(prediction_value))
 
-    except (ValueError, TypeError) as exc:
+    except (ValueError, TypeError, KeyError) as exc:
         raise HTTPException(
             status_code=422,
             detail="Unable to generate a prediction for the supplied data.",
         ) from exc
 
-    # Save prediction using the repository layer
+    # Save the application and prediction using the repository
     try:
         repository = ApplicationRepository()
 
@@ -343,7 +360,7 @@ prediction_value = model.predict(input_data)[0]
         )
 
     except Exception as exc:
-        # Keep database details out of the API response
+        # Log server-side details without exposing them to the client
         print(f"Failed to save prediction: {exc}")
 
         raise HTTPException(

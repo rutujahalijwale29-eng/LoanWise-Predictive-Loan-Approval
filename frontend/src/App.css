@@ -521,3 +521,77 @@ button {
     padding: 22px;
   }
 }
+
+/* Additional responsive improvements */
+
+/* Tablet layout */
+@media (min-width: 521px) and (max-width: 800px) {
+  .form-card {
+    padding: 26px;
+  }
+
+  .content {
+    width: 92%;
+    gap: 20px;
+  }
+
+  .topbar {
+    padding: 0 4%;
+  }
+}
+
+/* Small mobile screens */
+@media (max-width: 520px) {
+  .topbar {
+    flex-wrap: wrap;
+    padding-top: 12px;
+    padding-bottom: 12px;
+  }
+
+  .app-navigation {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .section-heading h2 {
+    font-size: 19px;
+  }
+
+  .step-label {
+    font-size: 9px;
+    padding: 7px;
+  }
+
+  .message {
+    padding: 16px;
+  }
+}
+
+/* Keyboard accessibility */
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 3px solid #80aaff;
+  outline-offset: 3px;
+}
+
+
+.field-error {
+  margin: 6px 0 0;
+  color: #dc2626;
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
+.field input[aria-invalid="true"],
+.field select[aria-invalid="true"] {
+  border-color: #dc2626;
+}
+
+.field input:focus-visible,
+.field select:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}
+

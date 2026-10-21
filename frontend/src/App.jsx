@@ -1,23 +1,13 @@
 
 import { useState } from "react";
+import { useLoan } from "./context/LoanContext";
 import "./App.css";
 import AdminDashboard from "./AdminDashboard";
+import { useForm } from "react-hook-form";
+import { yupResolver } from "@hookform/resolvers/yup";
+import { loanValidationSchema } from "./loanValidation";
 
 const API = "http://127.0.0.1:8000";
-
-const initialLoan = {
-  Gender: "Female",
-  Married: "No",
-  Dependents: "0",
-  Education: "Graduate",
-  Self_Employed: "No",
-  ApplicantIncome: "15000",
-  CoapplicantIncome: "2000",
-  LoanAmount: "2500",
-  Loan_Amount_Term: "360",
-  Credit_History: "Good",
-  Property_Area: "Urban",
-};
 
 function getSavedUser() {
   try {
@@ -32,11 +22,12 @@ function parseAmount(value) {
   const text = String(value ?? "").trim();
 
   if (!text) {
-    return { valid: false, message: "Please enter the Loan Amount." };
+    return {
+      valid: false,
+      message: "Please enter the Loan Amount.",
+    };
   }
 
-  // Accept either unformatted digits (100000) or correctly grouped
-  // Indian-format numbers (1,00,000), with optional decimals.
   const validFormat =
     /^\d+(\.\d+)?$/.test(text) ||
     /^\d{1,2}(,\d{2})*,\d{3}(\.\d+)?$/.test(text);
@@ -45,7 +36,7 @@ function parseAmount(value) {
     return {
       valid: false,
       message:
-        "Enter a valid Loan Amount, e.g. 100000 or 1,00,000. Do not enter text.",
+        "Enter a valid Loan Amount, e.g. 100000 or 1,00,000.",
     };
   }
 
@@ -73,6 +64,7 @@ function App() {
     const savedUser = getSavedUser();
 
     if (!savedToken) return "home";
+
     return savedUser?.role === "admin" ? "admin" : "predict";
   });
 
@@ -82,7 +74,19 @@ function App() {
     password: "",
   });
 
-  const [loan, setLoan] = useState(initialLoan);
+  const { loanForm: loan, setLoanForm: setLoan } = useLoan();
+
+  const {
+    register,
+    handleSubmit,
+    formState: { errors },
+  } = useForm({
+    resolver: yupResolver(loanValidationSchema),
+    defaultValues: loan,
+    mode: "onChange",
+    reValidateMode: "onChange",
+  });
+
   const [result, setResult] = useState("");
   const [applicationId, setApplicationId] = useState(null);
   const [message, setMessage] = useState("");
@@ -124,7 +128,9 @@ function App() {
         `${API}/auth/${isRegister ? "register" : "login"}`,
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+          },
           body: JSON.stringify(
             isRegister
               ? authForm
@@ -158,7 +164,9 @@ function App() {
         setPage("login");
       } else {
         if (!data.access_token || !data.user) {
-          throw new Error("Login response did not contain a token and user.");
+          throw new Error(
+            "Login response did not contain a token and user."
+          );
         }
 
         sessionStorage.setItem("loanwise_token", data.access_token);
@@ -179,10 +187,8 @@ function App() {
     }
   }
 
-  // Loan prediction
-  async function handlePrediction(event) {
-    event.preventDefault();
-
+  // Loan prediction: called only after Yup validation succeeds.
+  async function handlePrediction(validatedLoan) {
     const savedToken = sessionStorage.getItem("loanwise_token");
 
     if (!savedToken) {
@@ -196,8 +202,8 @@ function App() {
       return;
     }
 
-    // Validate Loan Amount before making an API request.
-    const parsedLoanAmount = parseAmount(loan.LoanAmount);
+    // Convert and validate the loan amount before calling the API.
+    const parsedLoanAmount = parseAmount(validatedLoan.LoanAmount);
 
     if (!parsedLoanAmount.valid) {
       setMessageType("error");
@@ -207,53 +213,20 @@ function App() {
       return;
     }
 
-    // Validate the other numeric fields as well.
-    const applicantIncome = Number(loan.ApplicantIncome);
-    const coapplicantIncome = Number(loan.CoapplicantIncome);
-    const loanTerm = Number(loan.Loan_Amount_Term);
-
-    if (
-      loan.ApplicantIncome.trim() === "" ||
-      !Number.isFinite(applicantIncome) ||
-      applicantIncome < 0
-    ) {
-      setMessageType("error");
-      setMessage("Applicant Income must be a valid non-negative number.");
-      return;
-    }
-
-    if (
-      loan.CoapplicantIncome.trim() === "" ||
-      !Number.isFinite(coapplicantIncome) ||
-      coapplicantIncome < 0
-    ) {
-      setMessageType("error");
-      setMessage("Co-applicant Income must be a valid non-negative number.");
-      return;
-    }
-
-    if (
-      loan.Loan_Amount_Term.trim() === "" ||
-      !Number.isFinite(loanTerm) ||
-      loanTerm <= 0
-    ) {
-      setMessageType("error");
-      setMessage("Loan Term must be a number greater than zero.");
-      return;
-    }
-
     setLoading(true);
     setMessage("");
     setMessageType("error");
     setResult("");
     setApplicationId(null);
 
+    // Yup converts numeric fields to numbers after successful validation.
     const payload = {
       ...loan,
-      ApplicantIncome: applicantIncome,
-      CoapplicantIncome: coapplicantIncome,
+      ...validatedLoan,
+      ApplicantIncome: Number(validatedLoan.ApplicantIncome),
+      CoapplicantIncome: Number(validatedLoan.CoapplicantIncome),
       LoanAmount: parsedLoanAmount.value,
-      Loan_Amount_Term: loanTerm,
+      Loan_Amount_Term: Number(validatedLoan.Loan_Amount_Term),
     };
 
     try {
@@ -315,6 +288,7 @@ function App() {
       setResult(normalizedPrediction);
       setApplicationId(data.application_id ?? null);
       setMessageType("success");
+
       setMessage(
         data.application_id !== undefined && data.application_id !== null
           ? `Prediction saved successfully. Application ID: ${data.application_id}`
@@ -391,16 +365,28 @@ function App() {
         <nav className="app-navigation">
           {token ? (
             <>
-              <span className="topbar-note">{user?.full_name || "User"}</span>
-              <button type="button" className="nav-button" onClick={logout}>
+              <span className="topbar-note">
+                {user?.full_name || "User"}
+              </span>
+
+              <button
+                type="button"
+                className="nav-button"
+                onClick={logout}
+              >
                 Logout
               </button>
             </>
           ) : (
             <>
-              <button type="button" className="nav-button" onClick={() => goTo("login")}>
+              <button
+                type="button"
+                className="nav-button"
+                onClick={() => goTo("login")}
+              >
                 Login
               </button>
+
               <button
                 type="button"
                 className="nav-button primary-nav"
@@ -416,11 +402,14 @@ function App() {
       {page === "home" && (
         <section className="hero">
           <p className="eyebrow">PREDICTIVE LOAN APPROVAL SYSTEM</p>
+
           <h1>Make sense of your loan prediction.</h1>
+
           <p className="hero-text">
             Enter applicant details and explore a possible loan outcome using
             machine learning.
           </p>
+
           <button
             type="button"
             className="predict-button"
@@ -437,7 +426,12 @@ function App() {
           <form className="form-card" onSubmit={handleAuth}>
             <div className="section-heading">
               <div>
-                <h2>{page === "register" ? "Create your account" : "Welcome back"}</h2>
+                <h2>
+                  {page === "register"
+                    ? "Create your account"
+                    : "Welcome back"}
+                </h2>
+
                 <p>
                   {page === "register"
                     ? "Register to start using LoanWise."
@@ -449,6 +443,7 @@ function App() {
             {page === "register" && (
               <div className="field auth-field">
                 <label htmlFor="full_name">Full Name</label>
+
                 <input
                   id="full_name"
                   name="full_name"
@@ -464,6 +459,7 @@ function App() {
 
             <div className="field auth-field">
               <label htmlFor="email">Email Address</label>
+
               <input
                 id="email"
                 name="email"
@@ -477,39 +473,53 @@ function App() {
 
             <div className="field">
               <label htmlFor="password">Password</label>
+
               <input
                 id="password"
                 name="password"
                 type="password"
                 value={authForm.password}
                 onChange={updateAuth}
-                autoComplete={page === "register" ? "new-password" : "current-password"}
+                autoComplete={
+                  page === "register" ? "new-password" : "current-password"
+                }
                 minLength={page === "register" ? 8 : undefined}
                 maxLength={128}
                 required
               />
             </div>
 
-            <button type="submit" className="predict-button" disabled={loading}>
+            <button
+              type="submit"
+              className="predict-button"
+              disabled={loading}
+            >
               {loading
                 ? "Please wait..."
                 : page === "register"
-                ? "Create Account"
-                : "Login"}
+                  ? "Create Account"
+                  : "Login"}
             </button>
 
             {message && (
-              <div className={`message ${messageType}`} role={messageType === "error" ? "alert" : "status"}>
+              <div
+                className={`message ${messageType}`}
+                role={messageType === "error" ? "alert" : "status"}
+              >
                 {message}
               </div>
             )}
 
             <p className="privacy-note">
-              {page === "register" ? "Already have an account?" : "Don't have an account?"}{" "}
+              {page === "register"
+                ? "Already have an account?"
+                : "Don't have an account?"}{" "}
               <button
                 type="button"
                 className="text-button"
-                onClick={() => goTo(page === "register" ? "login" : "register")}
+                onClick={() =>
+                  goTo(page === "register" ? "login" : "register")
+                }
               >
                 {page === "register" ? "Login" : "Register"}
               </button>
@@ -523,72 +533,101 @@ function App() {
           <section className="hero">
             <p className="eyebrow">LOAN ASSESSMENT</p>
             <h1>Loan prediction</h1>
+
             <p className="hero-text">
               Enter the applicant's information to generate a prediction.
             </p>
           </section>
 
           <section className="content">
-            <form className="form-card" onSubmit={handlePrediction}>
+            <form
+              className="form-card"
+              noValidate
+              onSubmit={handleSubmit(handlePrediction)}
+            >
               <div className="section-heading">
                 <div>
                   <h2>Applicant details</h2>
                   <p>Complete all required fields.</p>
                 </div>
+
                 <span className="step-label">11 FEATURES</span>
               </div>
 
               <div className="form-grid">
-                {selectFields.map(([name, label, options]) => (
-                  <div className="field" key={name}>
-                    <label htmlFor={name}>{label}</label>
-                    <select
-                      id={name}
-                      name={name}
-                      value={loan[name]}
-                      onChange={updateLoan}
-                      required
-                    >
-                      {options.map((option) => (
-                        <option key={option} value={option}>
-                          {option}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                ))}
+                {selectFields.map(([name, label, options]) => {
+                  const fieldRegistration = register(name);
 
-                {numberFields.map(([name, label, min]) => (
-                  <div className="field" key={name}>
-                    <label htmlFor={name}>{label}</label>
-                    {name === "LoanAmount" ? (
+                  return (
+                    <div className="field" key={name}>
+                      <label htmlFor={name}>{label}</label>
+
+                      <select
+                        id={name}
+                        {...fieldRegistration}
+                        value={loan[name] ?? ""}
+                        onChange={(event) => {
+                          fieldRegistration.onChange(event);
+                          updateLoan(event);
+                        }}
+                        aria-invalid={Boolean(errors[name])}
+                      >
+                        {options.map((option) => (
+                          <option key={option} value={option}>
+                            {option}
+                          </option>
+                        ))}
+                      </select>
+
+                      {errors[name] && (
+                        <p className="field-error" role="alert">
+                          {errors[name].message}
+                        </p>
+                      )}
+                    </div>
+                  );
+                })}
+
+                {numberFields.map(([name, label, min]) => {
+                  const fieldRegistration = register(name);
+
+                  return (
+                    <div className="field" key={name}>
+                      <label htmlFor={name}>{label}</label>
+
                       <input
                         id={name}
-                        name={name}
-                        type="text"
+                        {...fieldRegistration}
+                        type={name === "LoanAmount" ? "text" : "number"}
                         inputMode="decimal"
-                        placeholder="e.g. 1,00,000"
-                        value={loan[name]}
-                        onChange={updateLoan}
-                        required
-                      />
-                    ) : (
-                      <input
-                        id={name}
-                        name={name}
-                        type="number"
-                        min={min}
+                        min={name === "LoanAmount" ? undefined : min}
                         step="any"
-                        value={loan[name]}
-                        onChange={updateLoan}
-                        required
+                        placeholder={
+                          name === "LoanAmount" ? "e.g. 1,00,000" : undefined
+                        }
+                        value={loan[name] ?? ""}
+                        onChange={(event) => {
+                          fieldRegistration.onChange(event);
+                          updateLoan(event);
+                        }}
+                        aria-invalid={Boolean(errors[name])}
                       />
-                    )}
-                  </div>
-                ))}
+
+                      {errors[name] && (
+                        <p className="field-error" role="alert">
+                          {errors[name].message}
+                        </p>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
 
-              <button type="submit" className="predict-button" disabled={loading}>
+              <button
+                type="submit"
+                className="predict-button"
+                disabled={loading}
+              >
                 {loading ? "Analyzing..." : "Predict Loan"}
               </button>
 
@@ -597,41 +636,56 @@ function App() {
               </p>
 
               {message && (
-                <div className={`message ${messageType}`} role={messageType === "error" ? "alert" : "status"}>
+                <div
+                  className={`message ${messageType}`}
+                  role={messageType === "error" ? "alert" : "status"}
+                >
                   {message}
                 </div>
               )}
 
               {result && (
                 <div
-                  className={`message ${result === "Y" ? "success" : "rejected"}`}
+                  className={`message ${
+                    result === "Y" ? "success" : "rejected"
+                  }`}
                   role="status"
                 >
                   <span className="result-label">PREDICTION RESULT</span>
+
                   <h2>
                     {result === "Y"
                       ? "Likely to be approved"
                       : "Likely to be rejected"}
                   </h2>
+
                   <p>
                     {result === "Y"
                       ? "The model predicts a positive outcome."
                       : "The model predicts a negative outcome."}
                   </p>
-                  {applicationId !== null && <p>Application ID: {applicationId}</p>}
+
+                  {applicationId !== null && (
+                    <p>Application ID: {applicationId}</p>
+                  )}
                 </div>
               )}
             </form>
 
             <aside className="info-card">
               <div className="info-icon">✓</div>
+
               <h3>About LoanWise</h3>
+
               <p>
                 LoanWise uses a trained machine-learning model to estimate a
                 possible loan outcome from the details provided.
               </p>
+
               <div className="info-divider" />
+
               <h3>Important note</h3>
+
               <p>
                 A prediction is not a guarantee of approval or rejection. The
                 bank makes the final decision after its own checks.

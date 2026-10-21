@@ -48,7 +48,7 @@ class ApplicationRepository:
                     application["CoapplicantIncome"],
                     application["LoanAmount"],
                     application["Loan_Amount_Term"],
-                    int(application["Credit_History"]),
+                  {"Good": 1, "Bad": 0}[application["Credit_History"]],
                     application["Property_Area"],
                     prediction,
                 ),
