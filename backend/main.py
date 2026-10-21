@@ -4,11 +4,14 @@ from pathlib import Path
 import joblib
 import jwt
 import pandas as pd
+
 from jwt import InvalidTokenError
+from mysql.connector import Error
+
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer
-from mysql.connector import Error
+
 from pydantic import BaseModel, Field
 from typing import Literal
 
@@ -19,6 +22,7 @@ from backend.auth import (
 )
 from backend.database import get_db_connection
 from backend.admin import router as admin_router
+from backend.repository import ApplicationRepository
 
 
 # --------------------------------------------------
@@ -68,6 +72,12 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 def get_current_user_id(
     token: str = Depends(oauth2_scheme),
 ) -> int:
+    if not JWT_SECRET_KEY:
+        raise HTTPException(
+            status_code=500,
+            detail="JWT secret is not configured.",
+        )
+
     try:
         payload = jwt.decode(
             token,
@@ -97,7 +107,11 @@ def get_current_user_id(
         cursor = connection.cursor(dictionary=True)
 
         cursor.execute(
-            "SELECT id, is_active FROM users WHERE id = %s",
+            """
+            SELECT id, is_active
+            FROM users
+            WHERE id = %s
+            """,
             (user_id,),
         )
 
@@ -179,7 +193,7 @@ class LoanApplication(BaseModel):
     CoapplicantIncome: float = Field(ge=0)
     LoanAmount: float = Field(gt=0)
     Loan_Amount_Term: float = Field(gt=0)
-    Credit_History: float = Field(ge=0, le=1)
+    Credit_History: Literal["Good", "Bad"]
 
     Property_Area: Literal["Rural", "Semiurban", "Urban"]
 
@@ -263,7 +277,7 @@ def model_info():
 
 # --------------------------------------------------
 # Loan prediction endpoint
-# One application record per user
+# Every prediction creates a separate history record
 # --------------------------------------------------
 
 @app.post("/predict")
@@ -271,155 +285,74 @@ def predict(
     application: LoanApplication,
     user_id: int = Depends(get_current_user_id),
 ):
-    # Prepare input for the machine learning model
-    input_data = pd.DataFrame([application.model_dump()])
+    # Convert the validated Pydantic model into a DataFrame
+    application_data = application.model_dump()
+    input_data = pd.DataFrame([application_data])
 
-    for col, mapping in LABEL_MAPS.items():
-        value = str(input_data.at[0, col])
+    application_data = application.model_dump()
+input_data = pd.DataFrame([application_data])
 
-        if value not in mapping:
-            raise HTTPException(
-                status_code=422,
-                detail=f"Invalid value for {col}",
-            )
+# Convert categorical fields to the numeric values expected by the model
+for col, mapping in LABEL_MAPS.items():
+    value = str(input_data.at[0, col])
 
-        input_data[col] = input_data[col].map(mapping)
+    if value not in mapping:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid value for {col}: {value}"
+        )
+
+    input_data[col] = input_data[col].map(mapping)
+
+# Convert Credit History: Good = 1, Bad = 0
+CREDIT_HISTORY_MAP = {"Bad": 0, "Good": 1}
+input_data["Credit_History"] = input_data["Credit_History"].map(
+    CREDIT_HISTORY_MAP
+)
+
+# Keep the model's expected feature order
+if hasattr(model, "feature_names_in_"):
+    input_data = input_data[list(model.feature_names_in_)]
+
+# Predict only after all conversions
+prediction_value = model.predict(input_data)[0]
 
     # Match the feature order used during model training
     if hasattr(model, "feature_names_in_"):
         input_data = input_data[list(model.feature_names_in_)]
 
     # Generate prediction
-    prediction = str(model.predict(input_data)[0])
-
-    # Save or update the user's existing application
-    connection = None
-    cursor = None
-
     try:
-        connection = get_db_connection()
-        cursor = connection.cursor()
+        prediction_value = model.predict(input_data)[0]
+        prediction = str(int(prediction_value))
 
-        # Check whether this user already has an application
-        cursor.execute(
-            """
-            SELECT id
-            FROM loan_applications
-            WHERE user_id = %s
-            ORDER BY id ASC
-            LIMIT 1
-            """,
-            (user_id,),
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="Unable to generate a prediction for the supplied data.",
+        ) from exc
+
+    # Save prediction using the repository layer
+    try:
+        repository = ApplicationRepository()
+
+        application_id = repository.create_application(
+            user_id=user_id,
+            application=application_data,
+            prediction=prediction,
         )
 
-        existing_application = cursor.fetchone()
-
-        if existing_application:
-            # Update the existing application
-            application_id = existing_application[0]
-
-            cursor.execute(
-                """
-                UPDATE loan_applications
-                SET
-                    Gender = %s,
-                    Married = %s,
-                    Dependents = %s,
-                    Education = %s,
-                    Self_Employed = %s,
-                    ApplicantIncome = %s,
-                    CoapplicantIncome = %s,
-                    LoanAmount = %s,
-                    Loan_Amount_Term = %s,
-                    Credit_History = %s,
-                    Property_Area = %s,
-                    prediction = %s
-                WHERE id = %s AND user_id = %s
-                """,
-                (
-                    application.Gender,
-                    application.Married,
-                    application.Dependents,
-                    application.Education,
-                    application.Self_Employed,
-                    application.ApplicantIncome,
-                    application.CoapplicantIncome,
-                    application.LoanAmount,
-                    application.Loan_Amount_Term,
-                    int(application.Credit_History),
-                    application.Property_Area,
-                    prediction,
-                    application_id,
-                    user_id,
-                ),
-            )
-
-            message = "Prediction updated successfully"
-
-        else:
-            # Insert a new application for a user with no existing record
-            cursor.execute(
-                """
-                INSERT INTO loan_applications (
-                    user_id,
-                    Gender,
-                    Married,
-                    Dependents,
-                    Education,
-                    Self_Employed,
-                    ApplicantIncome,
-                    CoapplicantIncome,
-                    LoanAmount,
-                    Loan_Amount_Term,
-                    Credit_History,
-                    Property_Area,
-                    prediction
-                )
-                VALUES (
-                    %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s
-                )
-                """,
-                (
-                    user_id,
-                    application.Gender,
-                    application.Married,
-                    application.Dependents,
-                    application.Education,
-                    application.Self_Employed,
-                    application.ApplicantIncome,
-                    application.CoapplicantIncome,
-                    application.LoanAmount,
-                    application.Loan_Amount_Term,
-                    int(application.Credit_History),
-                    application.Property_Area,
-                    prediction,
-                ),
-            )
-
-            application_id = cursor.lastrowid
-            message = "Prediction generated and saved successfully"
-
-        connection.commit()
-
-        return {
-            "application_id": application_id,
-            "prediction": prediction,
-            "message": message,
-        }
-
-    except Error as exc:
-        if connection is not None:
-            connection.rollback()
+    except Exception as exc:
+        # Keep database details out of the API response
+        print(f"Failed to save prediction: {exc}")
 
         raise HTTPException(
             status_code=500,
             detail="Unable to save the prediction to the database.",
         ) from exc
 
-    finally:
-        if cursor is not None:
-            cursor.close()
-
-        if connection is not None and connection.is_connected():
-            connection.close()
+    return {
+        "application_id": application_id,
+        "prediction": prediction,
+        "message": "Prediction generated and saved successfully",
+    }
