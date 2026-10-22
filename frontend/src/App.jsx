@@ -1,5 +1,7 @@
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useNavigate, useLocation } from "react-router-dom";
+import { toast } from "react-toastify";
 import { useLoan } from "./context/LoanContext";
 import "./App.css";
 import AdminDashboard from "./AdminDashboard";
@@ -36,8 +38,7 @@ function parseAmount(value) {
   if (!validFormat) {
     return {
       valid: false,
-      message:
-        "Enter a valid Loan Amount, e.g. 100000 or 1,00,000.",
+      message: "Enter a valid Loan Amount, e.g. 100000 or 1,00,000.",
     };
   }
 
@@ -54,6 +55,9 @@ function parseAmount(value) {
 }
 
 function App() {
+  const navigate = useNavigate();
+  const location = useLocation();
+
   const [token, setToken] = useState(
     () => sessionStorage.getItem("loanwise_token") || ""
   );
@@ -96,10 +100,81 @@ function App() {
   const [messageType, setMessageType] = useState("error");
   const [loading, setLoading] = useState(false);
 
+  // Show notifications when network connectivity changes.
+  useEffect(() => {
+    const handleOnline = () => {
+      toast.success("Network connection restored.");
+    };
+
+    const handleOffline = () => {
+      toast.warning("You are offline. Check your network connection.");
+    };
+
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
+  }, []);
+
+  // Synchronize the displayed page with the browser URL.
+  // Protect prediction and admin pages from unauthorized access.
+  useEffect(() => {
+    const pathToPage = {
+      "/": "home",
+      "/login": "login",
+      "/register": "register",
+      "/predict": "predict",
+      "/admin": "admin",
+    };
+
+    const requestedPage = pathToPage[location.pathname];
+
+    if (!requestedPage) {
+      navigate("/", { replace: true });
+      return;
+    }
+
+    if (requestedPage === "predict" && (!token || !user)) {
+      setPage("login");
+      navigate("/login", { replace: true });
+      return;
+    }
+
+    if (
+      requestedPage === "admin" &&
+      (!token || !user || user.role !== "admin")
+    ) {
+      if (!token || !user) {
+        setPage("login");
+        navigate("/login", { replace: true });
+      } else {
+        setPage("predict");
+        navigate("/predict", { replace: true });
+      }
+      return;
+    }
+
+    setPage(requestedPage);
+  }, [location.pathname, navigate, token, user]);
+
   function goTo(nextPage) {
     setMessage("");
     setMessageType("error");
+
+    const routes = {
+      home: "/",
+      login: "/login",
+      register: "/register",
+      predict: "/predict",
+      admin: "/admin",
+    };
+
+    const nextRoute = routes[nextPage] || "/";
     setPage(nextPage);
+    navigate(nextRoute);
   }
 
   function updateAuth(event) {
@@ -116,7 +191,7 @@ function App() {
     }));
   }
 
-  // Registration and login
+  // Registration and login.
   async function handleAuth(event) {
     event.preventDefault();
 
@@ -162,9 +237,9 @@ function App() {
           password: "",
         });
 
-        setMessageType("success");
         setMessage("Registration successful. Please log in.");
-        setPage("login");
+        toast.success("Registration successful! Please log in.");
+        goTo("login");
       } else {
         if (!data.access_token || !data.user) {
           throw new Error(
@@ -173,7 +248,10 @@ function App() {
         }
 
         sessionStorage.setItem("loanwise_token", data.access_token);
-        sessionStorage.setItem("loanwise_user", JSON.stringify(data.user));
+        sessionStorage.setItem(
+          "loanwise_user",
+          JSON.stringify(data.user)
+        );
 
         setToken(data.access_token);
         setUser(data.user);
@@ -182,17 +260,29 @@ function App() {
         setApplicationId(null);
         setSubmittedLoan(null);
         setMessage("");
-        setPage(data.user.role === "admin" ? "admin" : "predict");
+
+        const destination =
+          data.user.role === "admin" ? "admin" : "predict";
+
+        setPage(destination);
+        navigate(destination === "admin" ? "/admin" : "/predict");
+
+        toast.success(
+          `Welcome to LoanWise, ${data.user.full_name || "User"}!`
+        );
       }
     } catch (error) {
       setMessageType("error");
-      setMessage(error.message || "Unable to connect to LoanWise.");
+      setMessage(
+        error.message || "Unable to connect to LoanWise."
+      );
+      toast.error(error.message || "Unable to connect to LoanWise.");
     } finally {
       setLoading(false);
     }
   }
 
-  // Loan prediction using the API service
+  // Loan prediction using the API service.
   async function handlePrediction(validatedLoan) {
     const savedToken = sessionStorage.getItem("loanwise_token");
 
@@ -205,7 +295,7 @@ function App() {
       setSubmittedLoan(null);
       setMessageType("error");
       setMessage("Please log in before submitting a loan application.");
-      setPage("login");
+      goTo("login");
       return;
     }
 
@@ -214,6 +304,7 @@ function App() {
     if (!parsedLoanAmount.valid) {
       setMessageType("error");
       setMessage(parsedLoanAmount.message);
+      toast.error(parsedLoanAmount.message);
       setResult("");
       setPredictionExplanation("");
       setApplicationId(null);
@@ -240,11 +331,12 @@ function App() {
 
     try {
       const data = await predictLoan(payload, savedToken);
-
       const rawPrediction = data.prediction;
 
       if (rawPrediction === undefined || rawPrediction === null) {
-        throw new Error("The API response does not contain a prediction.");
+        throw new Error(
+          "The API response does not contain a prediction."
+        );
       }
 
       const raw = String(rawPrediction).trim().toUpperCase();
@@ -262,8 +354,6 @@ function App() {
 
       setResult(normalizedPrediction);
 
-      // Display the explanation returned by FastAPI.
-      // Use a fallback if the API response doesn't include it.
       setPredictionExplanation(
         typeof data.prediction_explanation === "string" &&
           data.prediction_explanation.trim()
@@ -274,14 +364,20 @@ function App() {
       );
 
       setApplicationId(data.application_id ?? null);
-
-      // Save a snapshot of the details used for this prediction.
       setSubmittedLoan({ ...payload });
 
       setMessageType("success");
       setMessage(
-        data.application_id !== undefined && data.application_id !== null
+        data.application_id !== undefined &&
+          data.application_id !== null
           ? `Prediction saved successfully. Application ID: ${data.application_id}`
+          : "Prediction generated successfully."
+      );
+
+      toast.success(
+        data.application_id !== undefined &&
+          data.application_id !== null
+          ? `Prediction saved! Application ID: ${data.application_id}`
           : "Prediction generated successfully."
       );
     } catch (error) {
@@ -297,17 +393,23 @@ function App() {
 
         setToken("");
         setUser(null);
-        setPage("login");
         setMessage("Your session expired. Please log in again.");
+        toast.error("Your session expired. Please log in again.");
+        goTo("login");
       } else {
-        setMessage(error.message || "Prediction failed. Please try again.");
+        setMessage(
+          error.message || "Prediction failed. Please try again."
+        );
+        toast.error(
+          error.message || "Prediction failed. Please try again."
+        );
       }
     } finally {
       setLoading(false);
     }
   }
 
-  // Logout
+  // Logout.
   function logout() {
     sessionStorage.removeItem("loanwise_token");
     sessionStorage.removeItem("loanwise_user");
@@ -321,6 +423,9 @@ function App() {
     setMessage("");
     setMessageType("error");
     setPage("home");
+    navigate("/");
+
+    toast.info("You have been logged out.");
   }
 
   const selectFields = [
@@ -356,7 +461,7 @@ function App() {
       <header className="topbar">
         <a
           className="brand"
-          href="#home"
+          href="/"
           onClick={(event) => {
             event.preventDefault();
 
@@ -488,7 +593,9 @@ function App() {
                 value={authForm.password}
                 onChange={updateAuth}
                 autoComplete={
-                  page === "register" ? "new-password" : "current-password"
+                  page === "register"
+                    ? "new-password"
+                    : "current-password"
                 }
                 minLength={page === "register" ? 8 : undefined}
                 maxLength={128}
@@ -651,7 +758,6 @@ function App() {
                 </div>
               )}
 
-              {/* Prediction Result and Insights */}
               {result && (
                 <div
                   className={`message ${
@@ -693,61 +799,40 @@ function App() {
 
                       <div className="result-details">
                         <p>
-                          <strong>Gender:</strong>{" "}
-                          {submittedLoan.Gender}
+                          <strong>Gender:</strong> {submittedLoan.Gender}
                         </p>
-
                         <p>
-                          <strong>Marital Status:</strong>{" "}
-                          {submittedLoan.Married}
+                          <strong>Marital Status:</strong> {submittedLoan.Married}
                         </p>
-
                         <p>
-                          <strong>Dependents:</strong>{" "}
-                          {submittedLoan.Dependents}
+                          <strong>Dependents:</strong> {submittedLoan.Dependents}
                         </p>
-
                         <p>
-                          <strong>Education:</strong>{" "}
-                          {submittedLoan.Education}
+                          <strong>Education:</strong> {submittedLoan.Education}
                         </p>
-
                         <p>
-                          <strong>Self Employed:</strong>{" "}
-                          {submittedLoan.Self_Employed}
+                          <strong>Self Employed:</strong> {submittedLoan.Self_Employed}
                         </p>
-
                         <p>
                           <strong>Applicant Income:</strong>{" "}
-                          {Number(
-                            submittedLoan.ApplicantIncome
-                          ).toLocaleString("en-IN")}
+                          {Number(submittedLoan.ApplicantIncome).toLocaleString("en-IN")}
                         </p>
-
                         <p>
                           <strong>Co-applicant Income:</strong>{" "}
-                          {Number(
-                            submittedLoan.CoapplicantIncome
-                          ).toLocaleString("en-IN")}
+                          {Number(submittedLoan.CoapplicantIncome).toLocaleString("en-IN")}
                         </p>
-
                         <p>
                           <strong>Loan Amount:</strong>{" "}
-                          {Number(
-                            submittedLoan.LoanAmount
-                          ).toLocaleString("en-IN")}
+                          {Number(submittedLoan.LoanAmount).toLocaleString("en-IN")}
                         </p>
-
                         <p>
                           <strong>Loan Term:</strong>{" "}
                           {submittedLoan.Loan_Amount_Term} months
                         </p>
-
                         <p>
                           <strong>Credit History:</strong>{" "}
                           {submittedLoan.Credit_History}
                         </p>
-
                         <p>
                           <strong>Property Area:</strong>{" "}
                           {submittedLoan.Property_Area}
