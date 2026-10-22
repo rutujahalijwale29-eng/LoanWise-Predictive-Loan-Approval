@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, EmailStr, Field
 from pwdlib import PasswordHash
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from backend.database import get_db_connection
 

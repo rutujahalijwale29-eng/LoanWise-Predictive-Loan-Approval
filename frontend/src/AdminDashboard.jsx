@@ -60,7 +60,6 @@ function prettyDate(value) {
       });
 }
 
-
 function predictionLabel(row) {
   const raw = String(
     firstValue(
@@ -74,7 +73,9 @@ function predictionLabel(row) {
     return "Approved";
   }
 
-  if (["0", "n", "no", "rejected", "reject", "denied", "not approved"].includes(raw)) {
+  if (
+    ["0", "n", "no", "rejected", "reject", "denied", "not approved"].includes(raw)
+  ) {
     return "Rejected";
   }
 
@@ -83,25 +84,19 @@ function predictionLabel(row) {
     : raw.charAt(0).toUpperCase() + raw.slice(1);
 }
 
-
 function StatusBadge({ value }) {
   const label =
-    typeof value === "string"
-      ? value
-      : predictionLabel(value || {});
+    typeof value === "string" ? value : predictionLabel(value || {});
 
   const normalized = label.toLowerCase();
 
   const className = normalized.includes("approv")
     ? "approved"
-    : normalized.includes("reject") ||
-        normalized.includes("denied")
+    : normalized.includes("reject") || normalized.includes("denied")
       ? "rejected"
-      : normalized === "active" ||
-          normalized === "connected"
+      : normalized === "active" || normalized === "connected"
         ? "active"
-        : normalized === "inactive" ||
-            normalized === "unavailable"
+        : normalized === "inactive" || normalized === "unavailable"
           ? "inactive"
           : "pending";
 
@@ -130,6 +125,11 @@ export default function AdminDashboard({
   const [error, setError] = useState("");
   const [lastUpdated, setLastUpdated] = useState(null);
   const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState("All");
+  const [currentPage, setCurrentPage] = useState(1);
+  const [selectedApplication, setSelectedApplication] = useState(null);
+
+  const pageSize = 10;
 
   const loadDashboard = useCallback(async () => {
     if (!token) {
@@ -201,9 +201,7 @@ export default function AdminDashboard({
       "total_approved",
       "approvedApplications",
     ]) ||
-    applications.filter(
-      (row) => predictionLabel(row) === "Approved"
-    ).length;
+    applications.filter((row) => predictionLabel(row) === "Approved").length;
 
   const rejectedCount =
     numberValue(stats, [
@@ -213,31 +211,43 @@ export default function AdminDashboard({
       "total_rejected",
       "rejectedApplications",
     ]) ||
-    applications.filter(
-      (row) => predictionLabel(row) === "Rejected"
-    ).length;
+    applications.filter((row) => predictionLabel(row) === "Rejected").length;
 
   const filteredApplications = useMemo(() => {
     const q = search.trim().toLowerCase();
 
-    if (!q) return applications;
+    return applications.filter((row) => {
+      const matchesSearch =
+        !q ||
+        [
+          firstValue(
+            row,
+            ["full_name", "user_name", "applicant_name", "name"],
+            ""
+          ),
+          firstValue(row, ["email", "user_email"], ""),
+          firstValue(row, ["id", "application_id"], ""),
+          predictionLabel(row),
+        ]
+          .join(" ")
+          .toLowerCase()
+          .includes(q);
 
-    return applications.filter((row) =>
-      [
-        firstValue(
-          row,
-          ["full_name", "user_name", "applicant_name", "name"],
-          ""
-        ),
-        firstValue(row, ["email", "user_email"], ""),
-        firstValue(row, ["id", "application_id"], ""),
-        predictionLabel(row),
-      ]
-        .join(" ")
-        .toLowerCase()
-        .includes(q)
-    );
-  }, [applications, search]);
+      const status = predictionLabel(row);
+
+      const matchesStatus =
+        statusFilter === "All" ||
+        (statusFilter === "Approved" && status === "Approved") ||
+        (statusFilter === "Rejected" && status === "Rejected") ||
+        (statusFilter === "Pending" && status === "Pending");
+
+      return matchesSearch && matchesStatus;
+    });
+  }, [applications, search, statusFilter]);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [search, statusFilter, activePage]);
 
   const navGroups = [
     {
@@ -262,7 +272,17 @@ export default function AdminDashboard({
         )
       : filteredApplications;
 
-  const renderApplicationsTable = (rows) => (
+  const totalPages = Math.max(
+    1,
+    Math.ceil(shownApplications.length / pageSize)
+  );
+
+  const paginatedApplications = shownApplications.slice(
+    (currentPage - 1) * pageSize,
+    currentPage * pageSize
+  );
+
+    const renderApplicationsTable = (rows, includeDetails = false) => (
     <div className="lw-table-wrap">
       <table className="lw-table">
         <thead>
@@ -273,24 +293,21 @@ export default function AdminDashboard({
             <th>LOAN AMOUNT</th>
             <th>DATE SUBMITTED</th>
             <th>STATUS</th>
+            {includeDetails && <th>ACTION</th>}
           </tr>
         </thead>
 
         <tbody>
           {rows.length === 0 ? (
             <tr>
-              <td colSpan="6" className="lw-empty">
+              <td colSpan={includeDetails ? 7 : 6} className="lw-empty">
                 No applications found yet.
               </td>
             </tr>
           ) : (
             rows.map((row, index) => (
               <tr
-                key={firstValue(
-                  row,
-                  ["id", "application_id"],
-                  index
-                )}
+                key={firstValue(row, ["id", "application_id"], index)}
               >
                 <td className="lw-id">
                   #
@@ -335,9 +352,7 @@ export default function AdminDashboard({
                   </div>
                 </td>
 
-                <td>
-                  {firstValue(row, ["email", "user_email"], "—")}
-                </td>
+                <td>{firstValue(row, ["email", "user_email"], "—")}</td>
 
                 <td>
                   {(() => {
@@ -366,6 +381,18 @@ export default function AdminDashboard({
                 <td>
                   <StatusBadge value={predictionLabel(row)} />
                 </td>
+
+                {includeDetails && (
+                  <td>
+                    <button
+                      type="button"
+                      className="lw-outline-button"
+                      onClick={() => setSelectedApplication(row)}
+                    >
+                      View Details
+                    </button>
+                  </td>
+                )}
               </tr>
             ))
           )}
@@ -396,25 +423,17 @@ export default function AdminDashboard({
             </tr>
           ) : (
             users.map((item, index) => (
-              <tr
-                key={firstValue(item, ["id", "email"], index)}
-              >
+              <tr key={firstValue(item, ["id", "email"], index)}>
                 <td>
                   <div className="lw-applicant">
                     <span className="lw-avatar">
-                      {String(
-                        firstValue(item, ["full_name", "name"], "U")
-                      )
+                      {String(firstValue(item, ["full_name", "name"], "U"))
                         .slice(0, 1)
                         .toUpperCase()}
                     </span>
 
                     <span>
-                      {firstValue(
-                        item,
-                        ["full_name", "name"],
-                        "User"
-                      )}
+                      {firstValue(item, ["full_name", "name"], "User")}
                     </span>
                   </div>
                 </td>
@@ -433,21 +452,13 @@ export default function AdminDashboard({
 
                 <td>
                   {prettyDate(
-                    firstValue(
-                      item,
-                      ["created_at", "joined_at"],
-                      "—"
-                    )
+                    firstValue(item, ["created_at", "joined_at"], "—")
                   )}
                 </td>
 
                 <td>
                   <StatusBadge
-                    value={
-                      item.is_active === false
-                        ? "Inactive"
-                        : "Active"
-                    }
+                    value={item.is_active === false ? "Inactive" : "Active"}
                   />
                 </td>
               </tr>
@@ -486,7 +497,6 @@ export default function AdminDashboard({
       <aside className="lw-sidebar">
         <div className="lw-brand">
           <span className="lw-brand-mark">L</span>
-
           <span className="lw-brand-name">
             LoanWise
             <span>ADMIN PORTAL</span>
@@ -540,9 +550,7 @@ export default function AdminDashboard({
           <div className="lw-help-card">
             <span className="lw-help-icon">?</span>
             <strong>Need help?</strong>
-            <p>
-              Check your LoanWise dashboard data and system status.
-            </p>
+            <p>Check your LoanWise dashboard data and system status.</p>
 
             <button onClick={loadDashboard}>
               Refresh data <span>↗</span>
@@ -594,9 +602,7 @@ export default function AdminDashboard({
               </div>
 
               <div>
-                <strong>
-                  {user?.full_name || user?.name || "Admin"}
-                </strong>
+                <strong>{user?.full_name || user?.name || "Admin"}</strong>
                 <span>Administrator</span>
               </div>
 
@@ -608,10 +614,7 @@ export default function AdminDashboard({
         <div className="lw-page-content">
           <div className="lw-page-heading">
             <div>
-              <div className="lw-eyebrow">
-                LOANWISE CONTROL CENTER
-              </div>
-
+              <div className="lw-eyebrow">LOANWISE CONTROL CENTER</div>
               <h1>{pageIntro[0]}</h1>
               <p>{pageIntro[1]}</p>
             </div>
@@ -650,236 +653,7 @@ export default function AdminDashboard({
             </div>
           )}
 
-          {activePage === "Dashboard" && (
-            <>
-              <div className="lw-stats-grid">
-                <article className="lw-stat-card">
-                  <div className="lw-stat-top">
-                    <span>Total Applications</span>
-                    <span className="lw-stat-icon blue">▤</span>
-                  </div>
-                  <div className="lw-stat-number">
-                    {totalApplications.toLocaleString("en-IN")}
-                  </div>
-                  <div className="lw-stat-foot">
-                    <span className="lw-stat-dot blue-dot" />
-                    All loan submissions
-                  </div>
-                  <div className="lw-stat-watermark">▤</div>
-                </article>
-
-                <article className="lw-stat-card">
-                  <div className="lw-stat-top">
-                    <span>Approved Loans</span>
-                    <span className="lw-stat-icon green">✓</span>
-                  </div>
-                  <div className="lw-stat-number">
-                    {approvedCount.toLocaleString("en-IN")}
-                  </div>
-                  <div className="lw-stat-foot">
-                    <span className="lw-stat-dot green-dot" />
-                    Prediction approved
-                  </div>
-                  <div className="lw-stat-watermark">✓</div>
-                </article>
-
-                <article className="lw-stat-card">
-                  <div className="lw-stat-top">
-                    <span>Rejected Loans</span>
-                    <span className="lw-stat-icon red">×</span>
-                  </div>
-                  <div className="lw-stat-number">
-                    {rejectedCount.toLocaleString("en-IN")}
-                  </div>
-                  <div className="lw-stat-foot">
-                    <span className="lw-stat-dot red-dot" />
-                    Prediction rejected
-                  </div>
-                  <div className="lw-stat-watermark">×</div>
-                </article>
-
-                <article className="lw-stat-card">
-                  <div className="lw-stat-top">
-                    <span>Registered Users</span>
-                    <span className="lw-stat-icon violet">♙</span>
-                  </div>
-                  <div className="lw-stat-number">
-                    {totalUsers.toLocaleString("en-IN")}
-                  </div>
-                  <div className="lw-stat-foot">
-                    <span className="lw-stat-dot violet-dot" />
-                    Active user accounts
-                  </div>
-                  <div className="lw-stat-watermark">♙</div>
-                </article>
-              </div>
-
-              <div className="lw-overview-grid">
-                <section className="lw-panel lw-distribution-panel">
-                  <div className="lw-panel-heading">
-                    <div>
-                      <h2>Prediction Overview</h2>
-                      <p>Approval distribution across all applications</p>
-                    </div>
-                    <span className="lw-panel-menu">•••</span>
-                  </div>
-
-                  <div className="lw-donut-row">
-                    <div
-                      className="lw-donut"
-                      style={{
-                        "--approved": `${
-                          totalApplications
-                            ? (approvedCount / totalApplications) * 100
-                            : 0
-                        }%`,
-                        "--rejected": `${
-                          totalApplications
-                            ? (rejectedCount / totalApplications) * 100
-                            : 0
-                        }%`,
-                      }}
-                    >
-                      <div className="lw-donut-center">
-                        <strong>{totalApplications}</strong>
-                        <span>Applications</span>
-                      </div>
-                    </div>
-
-                    <div className="lw-legend">
-                      <div>
-                        <span className="lw-legend-dot approved-dot" />
-                        <div>
-                          <strong>Approved</strong>
-                          <span>{approvedCount} applications</span>
-                        </div>
-                        <b>
-                          {totalApplications
-                            ? Math.round(
-                                (approvedCount / totalApplications) * 100
-                              )
-                            : 0}
-                          %
-                        </b>
-                      </div>
-
-                      <div>
-                        <span className="lw-legend-dot rejected-dot" />
-                        <div>
-                          <strong>Rejected</strong>
-                          <span>{rejectedCount} applications</span>
-                        </div>
-                        <b>
-                          {totalApplications
-                            ? Math.round(
-                                (rejectedCount / totalApplications) * 100
-                              )
-                            : 0}
-                          %
-                        </b>
-                      </div>
-
-                      <div>
-                        <span className="lw-legend-dot pending-dot" />
-                        <div>
-                          <strong>Pending / Other</strong>
-                          <span>
-                            {Math.max(
-                              0,
-                              totalApplications -
-                                approvedCount -
-                                rejectedCount
-                            )}{" "}
-                            applications
-                          </span>
-                        </div>
-                        <b>
-                          {totalApplications
-                            ? Math.round(
-                                (Math.max(
-                                  0,
-                                  totalApplications -
-                                    approvedCount -
-                                    rejectedCount
-                                ) /
-                                  totalApplications) *
-                                  100
-                              )
-                            : 0}
-                          %
-                        </b>
-                      </div>
-                    </div>
-                  </div>
-                </section>
-
-                <section className="lw-panel lw-quick-panel">
-                  <div className="lw-panel-heading">
-                    <div>
-                      <h2>Quick Actions</h2>
-                      <p>Common administration tasks</p>
-                    </div>
-                  </div>
-
-                  <button
-                    className="lw-quick-action"
-                    onClick={() => setActivePage("All Applications")}
-                  >
-                    <span className="lw-quick-icon blue">▤</span>
-                    <span>
-                      <strong>View applications</strong>
-                      <small>Review submitted loan requests</small>
-                    </span>
-                    <b>›</b>
-                  </button>
-
-                  <button
-                    className="lw-quick-action"
-                    onClick={() => setActivePage("Registered Users")}
-                  >
-                    <span className="lw-quick-icon violet">♙</span>
-                    <span>
-                      <strong>Manage users</strong>
-                      <small>Browse registered accounts</small>
-                    </span>
-                    <b>›</b>
-                  </button>
-
-                  <button
-                    className="lw-quick-action"
-                    onClick={() => setActivePage("Reports & Analytics")}
-                  >
-                    <span className="lw-quick-icon green">▥</span>
-                    <span>
-                      <strong>View reports</strong>
-                      <small>Explore prediction summary</small>
-                    </span>
-                    <b>›</b>
-                  </button>
-                </section>
-              </div>
-
-              <section className="lw-panel lw-recent-panel">
-                <div className="lw-panel-heading">
-                  <div>
-                    <h2>Recent Loan Applications</h2>
-                    <p>Latest applications received by LoanWise</p>
-                  </div>
-
-                  <button
-                    className="lw-text-button"
-                    onClick={() => setActivePage("All Applications")}
-                  >
-                    View all applications <span>→</span>
-                  </button>
-                </div>
-
-                {renderApplicationsTable(applications.slice(0, 6))}
-              </section>
-            </>
-          )}
-
-          {(activePage === "All Applications" ||
+                    {(activePage === "All Applications" ||
             activePage === "All Predictions") && (
             <section className="lw-panel lw-list-panel">
               <div className="lw-panel-heading list-heading">
@@ -901,6 +675,19 @@ export default function AdminDashboard({
                     />
                   </label>
 
+                  <label className="lw-filter-label">
+                    <span className="lw-sr-only">Filter by status</span>
+                    <select
+                      value={statusFilter}
+                      onChange={(event) => setStatusFilter(event.target.value)}
+                    >
+                      <option value="All">All statuses</option>
+                      <option value="Approved">Approved</option>
+                      <option value="Rejected">Rejected</option>
+                      <option value="Pending">Pending</option>
+                    </select>
+                  </label>
+
                   <button
                     className="lw-outline-button"
                     onClick={loadDashboard}
@@ -910,7 +697,52 @@ export default function AdminDashboard({
                 </div>
               </div>
 
-              {renderApplicationsTable(shownApplications)}
+              {renderApplicationsTable(paginatedApplications, true)}
+
+              <div className="lw-pagination">
+                <span>
+                  Showing{" "}
+                  {shownApplications.length === 0
+                    ? 0
+                    : (currentPage - 1) * pageSize + 1}
+                  {"–"}
+                  {Math.min(
+                    currentPage * pageSize,
+                    shownApplications.length
+                  )}{" "}
+                  of {shownApplications.length}
+                </span>
+
+                <div>
+                  <button
+                    type="button"
+                    className="lw-outline-button"
+                    onClick={() =>
+                      setCurrentPage((page) => Math.max(1, page - 1))
+                    }
+                    disabled={currentPage === 1}
+                  >
+                    Previous
+                  </button>
+
+                  <span className="lw-page-number">
+                    Page {currentPage} of {totalPages}
+                  </span>
+
+                  <button
+                    type="button"
+                    className="lw-outline-button"
+                    onClick={() =>
+                      setCurrentPage((page) =>
+                        Math.min(totalPages, page + 1)
+                      )
+                    }
+                    disabled={currentPage >= totalPages}
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
             </section>
           )}
 
@@ -1052,6 +884,99 @@ export default function AdminDashboard({
                 >
                   Refresh report data
                 </button>
+              </section>
+            </div>
+          )}
+
+                    {selectedApplication && (
+            <div
+              className="lw-drawer-backdrop"
+              role="presentation"
+              onClick={(event) => {
+                if (event.target === event.currentTarget) {
+                  setSelectedApplication(null);
+                }
+              }}
+            >
+              <section
+                className="lw-detail-drawer"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="lw-detail-title"
+              >
+                <div className="lw-panel-heading">
+                  <div>
+                    <h2 id="lw-detail-title">Application Details</h2>
+                    <p>
+                      Application #
+                      {firstValue(
+                        selectedApplication,
+                        ["id", "application_id"],
+                        "—"
+                      )}
+                    </p>
+                  </div>
+
+                  <button
+                    type="button"
+                    className="lw-outline-button"
+                    onClick={() => setSelectedApplication(null)}
+                    aria-label="Close application details"
+                  >
+                    Close
+                  </button>
+                </div>
+
+                <div className="lw-detail-grid">
+                  {Object.entries(selectedApplication).map(([key, value]) => (
+                    <div className="lw-detail-item" key={key}>
+                      <span>{key.replace(/_/g, " ")}</span>
+                      <strong>
+                        {value === null || value === undefined || value === ""
+                          ? "—"
+                          : typeof value === "object"
+                            ? JSON.stringify(value)
+                            : String(value)}
+                      </strong>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="lw-explanation-section">
+                  <h3>Prediction Explanation</h3>
+
+                  {(() => {
+                    const explanation = firstValue(
+                      selectedApplication,
+                      [
+                        "prediction_explanation",
+                        "explanation",
+                        "explanations",
+                        "feature_importance",
+                        "reason",
+                        "reasons",
+                      ],
+                      null
+                    );
+
+                    if (explanation === null) {
+                      return (
+                        <p>
+                          No prediction explanation was returned by the
+                          backend for this application.
+                        </p>
+                      );
+                    }
+
+                    return (
+                      <pre className="lw-explanation-content">
+                        {typeof explanation === "object"
+                          ? JSON.stringify(explanation, null, 2)
+                          : String(explanation)}
+                      </pre>
+                    );
+                  })()}
+                </div>
               </section>
             </div>
           )}

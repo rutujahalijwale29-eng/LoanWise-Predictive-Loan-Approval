@@ -9,10 +9,17 @@ import pandas as pd
 from jwt import InvalidTokenError
 from mysql.connector import Error
 
-from fastapi import FastAPI, HTTPException, Depends, Query
+from fastapi import (
+    FastAPI,
+    HTTPException,
+    Depends,
+    Query,
+)
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import OAuth2PasswordBearer
-
+from fastapi.security import (
+    HTTPBearer,
+    HTTPAuthorizationCredentials,
+)
 from pydantic import BaseModel, Field
 
 from backend.auth import (
@@ -68,12 +75,16 @@ model = joblib.load(MODEL_PATH)
 # Authentication
 # --------------------------------------------------
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+bearer_scheme = HTTPBearer()
 
 
 def get_current_user_id(
-    token: str = Depends(oauth2_scheme),
+    credentials: HTTPAuthorizationCredentials = Depends(
+        bearer_scheme
+    ),
 ) -> int:
+    token = credentials.credentials
+
     if not JWT_SECRET_KEY:
         raise HTTPException(
             status_code=500,
@@ -86,6 +97,7 @@ def get_current_user_id(
             JWT_SECRET_KEY,
             algorithms=[ALGORITHM],
         )
+
         user_id = int(payload["sub"])
 
     except (
@@ -93,12 +105,12 @@ def get_current_user_id(
         KeyError,
         TypeError,
         ValueError,
-    ):
+    ) as exc:
         raise HTTPException(
             status_code=401,
-            detail="Invalid or expired login token.",
+            detail="Invalid or expired login token. Please log in again.",
             headers={"WWW-Authenticate": "Bearer"},
-        )
+        ) from exc
 
     connection = None
     cursor = None
@@ -122,6 +134,7 @@ def get_current_user_id(
             raise HTTPException(
                 status_code=401,
                 detail="User account is inactive or does not exist.",
+                headers={"WWW-Authenticate": "Bearer"},
             )
 
         return int(user["id"])
@@ -153,10 +166,17 @@ LABEL_MAPS = {
     "Dependents": {"0": 0, "1": 1, "2": 2, "3+": 3},
     "Education": {"Graduate": 0, "Not Graduate": 1},
     "Self_Employed": {"No": 0, "Yes": 1},
-    "Property_Area": {"Rural": 0, "Semiurban": 1, "Urban": 2},
+    "Property_Area": {
+        "Rural": 0,
+        "Semiurban": 1,
+        "Urban": 2,
+    },
 }
 
-CREDIT_HISTORY_MAP = {"Bad": 0, "Good": 1}
+CREDIT_HISTORY_MAP = {
+    "Bad": 0,
+    "Good": 1,
+}
 
 
 # --------------------------------------------------
@@ -185,24 +205,58 @@ class LoanApplication(BaseModel):
 
 def format_application_record(record: dict) -> dict:
     """Convert database values to JSON-friendly display values."""
-    record = dict(record)
 
-    credit_history = record.get("Credit_History")
+    formatted_record = dict(record)
+
+    credit_history = formatted_record.get("Credit_History")
+
     if credit_history is not None:
-        record["Credit_History"] = (
+        formatted_record["Credit_History"] = (
             "Good" if int(credit_history) == 1 else "Bad"
         )
 
-    # Convert datetime/date values to ISO strings for JSON.
-    for key, value in record.items():
+    prediction = str(
+        formatted_record.get("prediction") or ""
+    ).strip().upper()
+
+    if prediction == "Y":
+        formatted_record["prediction_label"] = "Approved"
+    elif prediction == "N":
+        formatted_record["prediction_label"] = "Rejected"
+    else:
+        formatted_record["prediction_label"] = "Pending"
+
+    explanation = formatted_record.get("prediction_explanation")
+
+    if not explanation or not str(explanation).strip():
+        if prediction == "Y":
+            formatted_record["prediction_explanation"] = (
+                "The model predicted that the loan was likely to be "
+                "approved. The original explanation was not saved."
+            )
+        elif prediction == "N":
+            formatted_record["prediction_explanation"] = (
+                "The model predicted that the loan was likely to be "
+                "rejected. The original explanation was not saved."
+            )
+        else:
+            formatted_record["prediction_explanation"] = (
+                "No prediction explanation is available for this record."
+            )
+
+    for key, value in formatted_record.items():
         if hasattr(value, "isoformat"):
-            record[key] = value.isoformat()
+            formatted_record[key] = value.isoformat()
 
-    return record
+    return formatted_record
 
 
-def get_owned_application(application_id: int, user_id: int) -> dict:
+def get_owned_application(
+    application_id: int,
+    user_id: int,
+) -> dict:
     """Return a record only when it belongs to the current user."""
+
     repository = ApplicationRepository()
     record = repository.get_application(application_id)
 
@@ -279,12 +333,16 @@ def db_health():
 def model_info():
     return {
         "model_type": type(model).__name__,
-        "feature_count": len(model.feature_names_in_)
-        if hasattr(model, "feature_names_in_")
-        else None,
-        "features": list(model.feature_names_in_)
-        if hasattr(model, "feature_names_in_")
-        else None,
+        "feature_count": (
+            len(model.feature_names_in_)
+            if hasattr(model, "feature_names_in_")
+            else None
+        ),
+        "features": (
+            list(model.feature_names_in_)
+            if hasattr(model, "feature_names_in_")
+            else None
+        ),
     }
 
 
@@ -300,6 +358,7 @@ def predict(
     application_data = application.model_dump()
     input_data = pd.DataFrame([application_data])
 
+    # Convert categorical inputs for the trained model.
     for column, mapping in LABEL_MAPS.items():
         value = str(input_data.at[0, column])
 
@@ -315,8 +374,10 @@ def predict(
         "Credit_History"
     ].map(CREDIT_HISTORY_MAP)
 
+    # Match the exact feature order used during model training.
     if hasattr(model, "feature_names_in_"):
         expected_features = list(model.feature_names_in_)
+
         missing_features = [
             feature
             for feature in expected_features
@@ -334,26 +395,44 @@ def predict(
 
         input_data = input_data[expected_features]
 
+    # Generate prediction.
     try:
         prediction_value = model.predict(input_data)[0]
         prediction = str(int(prediction_value))
 
+        if prediction not in {"0", "1"}:
+            raise ValueError("Unexpected model prediction value.")
+
     except (ValueError, TypeError, KeyError) as exc:
         raise HTTPException(
             status_code=422,
-            detail="Unable to generate a prediction for the supplied data.",
+            detail=(
+                "Unable to generate a prediction for the supplied data."
+            ),
         ) from exc
 
+    # Generate a basic prediction explanation.
+        # Generate prediction explanation
+    prediction_explanation = (
+        "The model predicts that the loan is likely to be approved."
+        if prediction == "1"
+        else "The model predicts that the loan is likely to be rejected."
+    )
+
+    # Save application and prediction
     try:
         repository = ApplicationRepository()
+
         application_id = repository.create_application(
             user_id=user_id,
             application=application_data,
             prediction=prediction,
+            prediction_explanation=prediction_explanation,
         )
 
     except Exception as exc:
         print(f"Failed to save prediction: {exc}")
+
         raise HTTPException(
             status_code=500,
             detail="Unable to save the prediction to the database.",
@@ -362,6 +441,7 @@ def predict(
     return {
         "application_id": application_id,
         "prediction": prediction,
+        "prediction_explanation": prediction_explanation,
         "message": "Prediction generated and saved successfully",
     }
 

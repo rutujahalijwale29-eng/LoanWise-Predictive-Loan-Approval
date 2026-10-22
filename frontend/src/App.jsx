@@ -18,7 +18,7 @@ function getSavedUser() {
   }
 }
 
-// Accepts plain numbers and Indian comma formatting, e.g. 1,00,000.
+// Accept plain numbers and Indian comma formatting, e.g. 1,00,000.
 function parseAmount(value) {
   const text = String(value ?? "").trim();
 
@@ -89,6 +89,7 @@ function App() {
   });
 
   const [result, setResult] = useState("");
+  const [predictionExplanation, setPredictionExplanation] = useState("");
   const [applicationId, setApplicationId] = useState(null);
   const [submittedLoan, setSubmittedLoan] = useState(null);
   const [message, setMessage] = useState("");
@@ -177,6 +178,7 @@ function App() {
         setToken(data.access_token);
         setUser(data.user);
         setResult("");
+        setPredictionExplanation("");
         setApplicationId(null);
         setSubmittedLoan(null);
         setMessage("");
@@ -198,6 +200,7 @@ function App() {
       setToken("");
       setUser(null);
       setResult("");
+      setPredictionExplanation("");
       setApplicationId(null);
       setSubmittedLoan(null);
       setMessageType("error");
@@ -212,6 +215,7 @@ function App() {
       setMessageType("error");
       setMessage(parsedLoanAmount.message);
       setResult("");
+      setPredictionExplanation("");
       setApplicationId(null);
       setSubmittedLoan(null);
       return;
@@ -221,6 +225,7 @@ function App() {
     setMessage("");
     setMessageType("error");
     setResult("");
+    setPredictionExplanation("");
     setApplicationId(null);
     setSubmittedLoan(null);
 
@@ -256,6 +261,18 @@ function App() {
       }
 
       setResult(normalizedPrediction);
+
+      // Display the explanation returned by FastAPI.
+      // Use a fallback if the API response doesn't include it.
+      setPredictionExplanation(
+        typeof data.prediction_explanation === "string" &&
+          data.prediction_explanation.trim()
+          ? data.prediction_explanation
+          : normalizedPrediction === "Y"
+            ? "The model predicts that the loan is likely to be approved."
+            : "The model predicts that the loan is likely to be rejected."
+      );
+
       setApplicationId(data.application_id ?? null);
 
       // Save a snapshot of the details used for this prediction.
@@ -270,6 +287,7 @@ function App() {
     } catch (error) {
       setMessageType("error");
       setResult("");
+      setPredictionExplanation("");
       setApplicationId(null);
       setSubmittedLoan(null);
 
@@ -297,6 +315,7 @@ function App() {
     setToken("");
     setUser(null);
     setResult("");
+    setPredictionExplanation("");
     setApplicationId(null);
     setSubmittedLoan(null);
     setMessage("");
@@ -658,11 +677,7 @@ function App() {
                       : "Likely to be rejected"}
                   </h2>
 
-                  <p>
-                    {result === "Y"
-                      ? "The model predicts a positive outcome."
-                      : "The model predicts a negative outcome."}
-                  </p>
+                  <p>{predictionExplanation}</p>
 
                   {applicationId !== null && (
                     <p>
@@ -765,7 +780,7 @@ function App() {
 
               <p>
                 A prediction is not a guarantee of approval or rejection. The
-                bank makes the final decision after its own checks.
+                bank makes the final decision.
               </p>
             </aside>
           </section>
