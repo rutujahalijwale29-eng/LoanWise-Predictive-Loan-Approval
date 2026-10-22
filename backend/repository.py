@@ -94,85 +94,95 @@ class ApplicationRepository:
             if connection is not None and connection.is_connected():
                 connection.close()
 
-    def get_user_history(
-        self,
-        user_id: int,
-        page: int = 1,
-        page_size: int = 10,
-    ):
-        if page < 1 or not 1 <= page_size <= 100:
-            raise ValueError("Invalid pagination values.")
+    
+def get_user_history(
+    self,
+    user_id: int,
+    page: int = 1,
+    page_size: int = 10,
+    search: str = "",
+    status: str = "",
+):
+    if page < 1 or not 1 <= page_size <= 100:
+        raise ValueError("Invalid pagination values.")
 
-        connection = None
-        cursor = None
+    if status and status not in ("0", "1"):
+        raise ValueError("Status must be 0, 1, or empty.")
 
-        try:
-            connection = get_db_connection()
-            cursor = connection.cursor(dictionary=True)
+    connection = None
+    cursor = None
 
-            cursor.execute(
+    try:
+        connection = get_db_connection()
+        cursor = connection.cursor(dictionary=True)
+
+        conditions = ["user_id = %s"]
+        params = [user_id]
+
+        if search.strip():
+            keyword = f"%{search.strip()}%"
+            conditions.append(
                 """
-                SELECT COUNT(*) AS total
-                FROM loan_applications
-                WHERE user_id = %s
-                """,
-                (user_id,),
-            )
-            total = cursor.fetchone()["total"]
-
-            offset = (page - 1) * page_size
-
-            cursor.execute(
+                (
+                    CAST(id AS CHAR) LIKE %s
+                    OR Gender LIKE %s
+                    OR Married LIKE %s
+                    OR Education LIKE %s
+                    OR Property_Area LIKE %s
+                    OR prediction LIKE %s
+                )
                 """
-                SELECT *
-                FROM loan_applications
-                WHERE user_id = %s
-                ORDER BY created_at DESC, id DESC
-                LIMIT %s OFFSET %s
-                """,
-                (user_id, page_size, offset),
             )
+            params.extend([keyword] * 6)
 
-            records = cursor.fetchall()
+        if status:
+            conditions.append("prediction = %s")
+            params.append(status)
 
-            return {
-                "applications": records,
-                "total_records": total,
-                "page": page,
-                "page_size": page_size,
-                "total_pages": (total + page_size - 1) // page_size,
-            }
+        where_clause = " AND ".join(conditions)
 
-        finally:
-            if cursor is not None:
-                cursor.close()
-            if connection is not None and connection.is_connected():
-                connection.close()
+        cursor.execute(
+            f"""
+            SELECT COUNT(*) AS total
+            FROM loan_applications
+            WHERE {where_clause}
+            """,
+            tuple(params),
+        )
+        total = cursor.fetchone()["total"]
 
-    def delete_application(self, application_id: int) -> bool:
-        connection = None
-        cursor = None
+        offset = (page - 1) * page_size
 
-        try:
-            connection = get_db_connection()
-            cursor = connection.cursor()
+        cursor.execute(
+            f"""
+            SELECT *
+            FROM loan_applications
+            WHERE {where_clause}
+            ORDER BY created_at DESC, id DESC
+            LIMIT %s OFFSET %s
+            """,
+            tuple(params + [page_size, offset]),
+        )
 
-            cursor.execute(
-                "DELETE FROM loan_applications WHERE id = %s",
-                (application_id,),
-            )
+        records = cursor.fetchall()
 
-            deleted = cursor.rowcount > 0
-            connection.commit()
-            return deleted
+        # Convert database credit history values to readable labels.
+        for record in records:
+            if record.get("Credit_History") is not None:
+                record["Credit_History"] = (
+                    "Good" if record["Credit_History"] == 1 else "Bad"
+                )
 
-        except mysql.connector.Error:
-            if connection is not None and connection.is_connected():
-                connection.rollback()
-            raise
+        return {
+            "applications": records,
+            "total_records": total,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": (total + page_size - 1) // page_size,
+        }
 
-        finally:
-            if cursor is not None:
-                cursor.close()
-            if connection is not None and connection.is_connected():
-                connection.close()
+    finally:
+        if cursor is not None:
+            cursor.close()
+        if connection is not None and connection.is_connected():
+            connection.close()

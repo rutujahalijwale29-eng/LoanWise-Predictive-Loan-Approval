@@ -6,6 +6,7 @@ import AdminDashboard from "./AdminDashboard";
 import { useForm } from "react-hook-form";
 import { yupResolver } from "@hookform/resolvers/yup";
 import { loanValidationSchema } from "./loanValidation";
+import { predictLoan } from "./services/loanService";
 
 const API = "http://127.0.0.1:8000";
 
@@ -89,6 +90,7 @@ function App() {
 
   const [result, setResult] = useState("");
   const [applicationId, setApplicationId] = useState(null);
+  const [submittedLoan, setSubmittedLoan] = useState(null);
   const [message, setMessage] = useState("");
   const [messageType, setMessageType] = useState("error");
   const [loading, setLoading] = useState(false);
@@ -176,6 +178,7 @@ function App() {
         setUser(data.user);
         setResult("");
         setApplicationId(null);
+        setSubmittedLoan(null);
         setMessage("");
         setPage(data.user.role === "admin" ? "admin" : "predict");
       }
@@ -187,7 +190,7 @@ function App() {
     }
   }
 
-  // Loan prediction: called only after Yup validation succeeds.
+  // Loan prediction using the API service
   async function handlePrediction(validatedLoan) {
     const savedToken = sessionStorage.getItem("loanwise_token");
 
@@ -196,13 +199,13 @@ function App() {
       setUser(null);
       setResult("");
       setApplicationId(null);
+      setSubmittedLoan(null);
       setMessageType("error");
       setMessage("Please log in before submitting a loan application.");
       setPage("login");
       return;
     }
 
-    // Convert and validate the loan amount before calling the API.
     const parsedLoanAmount = parseAmount(validatedLoan.LoanAmount);
 
     if (!parsedLoanAmount.valid) {
@@ -210,6 +213,7 @@ function App() {
       setMessage(parsedLoanAmount.message);
       setResult("");
       setApplicationId(null);
+      setSubmittedLoan(null);
       return;
     }
 
@@ -218,8 +222,8 @@ function App() {
     setMessageType("error");
     setResult("");
     setApplicationId(null);
+    setSubmittedLoan(null);
 
-    // Yup converts numeric fields to numbers after successful validation.
     const payload = {
       ...loan,
       ...validatedLoan,
@@ -230,44 +234,12 @@ function App() {
     };
 
     try {
-      const response = await fetch(`${API}/predict`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${savedToken}`,
-        },
-        body: JSON.stringify(payload),
-      });
-
-      const data = await response.json();
-
-      if (response.status === 401) {
-        sessionStorage.removeItem("loanwise_token");
-        sessionStorage.removeItem("loanwise_user");
-
-        setToken("");
-        setUser(null);
-        setResult("");
-        setApplicationId(null);
-        setPage("login");
-
-        throw new Error("Your session expired. Please log in again.");
-      }
-
-      if (!response.ok) {
-        throw new Error(
-          typeof data.detail === "string"
-            ? data.detail
-            : JSON.stringify(data.detail ?? data)
-        );
-      }
+      const data = await predictLoan(payload, savedToken);
 
       const rawPrediction = data.prediction;
 
       if (rawPrediction === undefined || rawPrediction === null) {
-        throw new Error(
-          `The API response has no prediction field: ${JSON.stringify(data)}`
-        );
+        throw new Error("The API response does not contain a prediction.");
       }
 
       const raw = String(rawPrediction).trim().toUpperCase();
@@ -280,15 +252,16 @@ function App() {
       ) {
         normalizedPrediction = "N";
       } else {
-        throw new Error(
-          `Unexpected prediction value: ${JSON.stringify(data)}`
-        );
+        throw new Error(`Unexpected prediction value: ${raw}`);
       }
 
       setResult(normalizedPrediction);
       setApplicationId(data.application_id ?? null);
-      setMessageType("success");
 
+      // Save a snapshot of the details used for this prediction.
+      setSubmittedLoan({ ...payload });
+
+      setMessageType("success");
       setMessage(
         data.application_id !== undefined && data.application_id !== null
           ? `Prediction saved successfully. Application ID: ${data.application_id}`
@@ -296,7 +269,21 @@ function App() {
       );
     } catch (error) {
       setMessageType("error");
-      setMessage(error.message || "Prediction failed.");
+      setResult("");
+      setApplicationId(null);
+      setSubmittedLoan(null);
+
+      if (error.message === "SESSION_EXPIRED") {
+        sessionStorage.removeItem("loanwise_token");
+        sessionStorage.removeItem("loanwise_user");
+
+        setToken("");
+        setUser(null);
+        setPage("login");
+        setMessage("Your session expired. Please log in again.");
+      } else {
+        setMessage(error.message || "Prediction failed. Please try again.");
+      }
     } finally {
       setLoading(false);
     }
@@ -311,6 +298,7 @@ function App() {
     setUser(null);
     setResult("");
     setApplicationId(null);
+    setSubmittedLoan(null);
     setMessage("");
     setMessageType("error");
     setPage("home");
@@ -644,14 +632,25 @@ function App() {
                 </div>
               )}
 
+              {/* Prediction Result and Insights */}
               {result && (
                 <div
                   className={`message ${
                     result === "Y" ? "success" : "rejected"
-                  }`}
+                  } prediction-result`}
                   role="status"
                 >
                   <span className="result-label">PREDICTION RESULT</span>
+
+                  <div className="result-status-row">
+                    <span
+                      className={`result-badge ${
+                        result === "Y" ? "approved-badge" : "rejected-badge"
+                      }`}
+                    >
+                      {result === "Y" ? "APPROVED" : "REJECTED"}
+                    </span>
+                  </div>
 
                   <h2>
                     {result === "Y"
@@ -666,8 +665,86 @@ function App() {
                   </p>
 
                   {applicationId !== null && (
-                    <p>Application ID: {applicationId}</p>
+                    <p>
+                      <strong>Application ID:</strong> {applicationId}
+                    </p>
                   )}
+
+                  {submittedLoan && (
+                    <>
+                      <hr />
+
+                      <h3>Applicant Details</h3>
+
+                      <div className="result-details">
+                        <p>
+                          <strong>Gender:</strong>{" "}
+                          {submittedLoan.Gender}
+                        </p>
+
+                        <p>
+                          <strong>Marital Status:</strong>{" "}
+                          {submittedLoan.Married}
+                        </p>
+
+                        <p>
+                          <strong>Dependents:</strong>{" "}
+                          {submittedLoan.Dependents}
+                        </p>
+
+                        <p>
+                          <strong>Education:</strong>{" "}
+                          {submittedLoan.Education}
+                        </p>
+
+                        <p>
+                          <strong>Self Employed:</strong>{" "}
+                          {submittedLoan.Self_Employed}
+                        </p>
+
+                        <p>
+                          <strong>Applicant Income:</strong>{" "}
+                          {Number(
+                            submittedLoan.ApplicantIncome
+                          ).toLocaleString("en-IN")}
+                        </p>
+
+                        <p>
+                          <strong>Co-applicant Income:</strong>{" "}
+                          {Number(
+                            submittedLoan.CoapplicantIncome
+                          ).toLocaleString("en-IN")}
+                        </p>
+
+                        <p>
+                          <strong>Loan Amount:</strong>{" "}
+                          {Number(
+                            submittedLoan.LoanAmount
+                          ).toLocaleString("en-IN")}
+                        </p>
+
+                        <p>
+                          <strong>Loan Term:</strong>{" "}
+                          {submittedLoan.Loan_Amount_Term} months
+                        </p>
+
+                        <p>
+                          <strong>Credit History:</strong>{" "}
+                          {submittedLoan.Credit_History}
+                        </p>
+
+                        <p>
+                          <strong>Property Area:</strong>{" "}
+                          {submittedLoan.Property_Area}
+                        </p>
+                      </div>
+                    </>
+                  )}
+
+                  <p className="result-disclaimer">
+                    This is a machine-learning estimate, not a guarantee of
+                    the bank's final decision.
+                  </p>
                 </div>
               )}
             </form>

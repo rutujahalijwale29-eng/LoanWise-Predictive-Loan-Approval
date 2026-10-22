@@ -9,7 +9,7 @@ import pandas as pd
 from jwt import InvalidTokenError
 from mysql.connector import Error
 
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer
 
@@ -37,14 +37,11 @@ app.include_router(admin_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:5173",
-        "http://localhost:5174",
-        "http://localhost:5175",
-        "http://localhost:5176",
-        "http://127.0.0.1:5173",
-        "http://127.0.0.1:5174",
-        "http://127.0.0.1:5175",
-        "http://127.0.0.1:5176",
+        f"http://localhost:{port}"
+        for port in range(5173, 5177)
+    ] + [
+        f"http://127.0.0.1:{port}"
+        for port in range(5173, 5177)
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -89,7 +86,6 @@ def get_current_user_id(
             JWT_SECRET_KEY,
             algorithms=[ALGORITHM],
         )
-
         user_id = int(payload["sub"])
 
     except (
@@ -149,43 +145,18 @@ def get_current_user_id(
 
 # --------------------------------------------------
 # Categorical mappings
-# Must match the model's training preprocessing
 # --------------------------------------------------
 
 LABEL_MAPS = {
-    "Gender": {
-        "Female": 0,
-        "Male": 1,
-    },
-    "Married": {
-        "No": 0,
-        "Yes": 1,
-    },
-    "Dependents": {
-        "0": 0,
-        "1": 1,
-        "2": 2,
-        "3+": 3,
-    },
-    "Education": {
-        "Graduate": 0,
-        "Not Graduate": 1,
-    },
-    "Self_Employed": {
-        "No": 0,
-        "Yes": 1,
-    },
-    "Property_Area": {
-        "Rural": 0,
-        "Semiurban": 1,
-        "Urban": 2,
-    },
+    "Gender": {"Female": 0, "Male": 1},
+    "Married": {"No": 0, "Yes": 1},
+    "Dependents": {"0": 0, "1": 1, "2": 2, "3+": 3},
+    "Education": {"Graduate": 0, "Not Graduate": 1},
+    "Self_Employed": {"No": 0, "Yes": 1},
+    "Property_Area": {"Rural": 0, "Semiurban": 1, "Urban": 2},
 }
 
-CREDIT_HISTORY_MAP = {
-    "Bad": 0,
-    "Good": 1,
-}
+CREDIT_HISTORY_MAP = {"Bad": 0, "Good": 1}
 
 
 # --------------------------------------------------
@@ -209,14 +180,48 @@ class LoanApplication(BaseModel):
 
 
 # --------------------------------------------------
+# Helpers for application history
+# --------------------------------------------------
+
+def format_application_record(record: dict) -> dict:
+    """Convert database values to JSON-friendly display values."""
+    record = dict(record)
+
+    credit_history = record.get("Credit_History")
+    if credit_history is not None:
+        record["Credit_History"] = (
+            "Good" if int(credit_history) == 1 else "Bad"
+        )
+
+    # Convert datetime/date values to ISO strings for JSON.
+    for key, value in record.items():
+        if hasattr(value, "isoformat"):
+            record[key] = value.isoformat()
+
+    return record
+
+
+def get_owned_application(application_id: int, user_id: int) -> dict:
+    """Return a record only when it belongs to the current user."""
+    repository = ApplicationRepository()
+    record = repository.get_application(application_id)
+
+    if record is None or int(record["user_id"]) != user_id:
+        raise HTTPException(
+            status_code=404,
+            detail="Application not found.",
+        )
+
+    return format_application_record(record)
+
+
+# --------------------------------------------------
 # Home endpoint
 # --------------------------------------------------
 
 @app.get("/")
 def home():
-    return {
-        "message": "Welcome to LoanWise API!"
-    }
+    return {"message": "Welcome to LoanWise API!"}
 
 
 # --------------------------------------------------
@@ -225,9 +230,7 @@ def home():
 
 @app.get("/health")
 def health():
-    return {
-        "status": "healthy"
-    }
+    return {"status": "healthy"}
 
 
 # --------------------------------------------------
@@ -287,7 +290,6 @@ def model_info():
 
 # --------------------------------------------------
 # Loan prediction endpoint
-# Each successful prediction creates a history record
 # --------------------------------------------------
 
 @app.post("/predict")
@@ -295,13 +297,9 @@ def predict(
     application: LoanApplication,
     user_id: int = Depends(get_current_user_id),
 ):
-    # Preserve the original validated values for database storage
     application_data = application.model_dump()
-
-    # Prepare model input
     input_data = pd.DataFrame([application_data])
 
-    # Convert categorical fields
     for column, mapping in LABEL_MAPS.items():
         value = str(input_data.at[0, column])
 
@@ -313,12 +311,10 @@ def predict(
 
         input_data[column] = input_data[column].map(mapping)
 
-    # Convert credit history
     input_data["Credit_History"] = input_data[
         "Credit_History"
     ].map(CREDIT_HISTORY_MAP)
 
-    # Ensure all expected model features exist
     if hasattr(model, "feature_names_in_"):
         expected_features = list(model.feature_names_in_)
         missing_features = [
@@ -338,7 +334,6 @@ def predict(
 
         input_data = input_data[expected_features]
 
-    # Generate prediction
     try:
         prediction_value = model.predict(input_data)[0]
         prediction = str(int(prediction_value))
@@ -349,10 +344,8 @@ def predict(
             detail="Unable to generate a prediction for the supplied data.",
         ) from exc
 
-    # Save the application and prediction using the repository
     try:
         repository = ApplicationRepository()
-
         application_id = repository.create_application(
             user_id=user_id,
             application=application_data,
@@ -360,9 +353,7 @@ def predict(
         )
 
     except Exception as exc:
-        # Log server-side details without exposing them to the client
         print(f"Failed to save prediction: {exc}")
-
         raise HTTPException(
             status_code=500,
             detail="Unable to save the prediction to the database.",
@@ -373,3 +364,70 @@ def predict(
         "prediction": prediction,
         "message": "Prediction generated and saved successfully",
     }
+
+
+# --------------------------------------------------
+# Application history
+# Supports keyword search, status filter and pagination
+# --------------------------------------------------
+
+@app.get("/applications")
+def get_applications(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1, le=100),
+    search: str = Query("", max_length=100),
+    status: Literal["", "0", "1"] = Query(""),
+    user_id: int = Depends(get_current_user_id),
+):
+    repository = ApplicationRepository()
+
+    try:
+        result = repository.get_user_history(
+            user_id=user_id,
+            page=page,
+            page_size=page_size,
+            search=search,
+            status=status,
+        )
+
+        result["applications"] = [
+            format_application_record(record)
+            for record in result["applications"]
+        ]
+
+        return result
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
+    except Error as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to retrieve application history.",
+        ) from exc
+
+
+# --------------------------------------------------
+# Detailed view of a single application
+# Only the owning user can view the record
+# --------------------------------------------------
+
+@app.get("/applications/{application_id}")
+def get_application_details(
+    application_id: int,
+    user_id: int = Depends(get_current_user_id),
+):
+    try:
+        return get_owned_application(application_id, user_id)
+
+    except HTTPException:
+        raise
+
+    except Error as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to retrieve application details.",
+        ) from exc
