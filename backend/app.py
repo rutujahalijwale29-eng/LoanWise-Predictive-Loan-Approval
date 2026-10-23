@@ -331,18 +331,18 @@ def db_health():
 
 @app.get("/model-info")
 def model_info():
+    features = (
+        list(model.feature_names_in_)
+        if hasattr(model, "feature_names_in_")
+        else None
+    )
+
     return {
         "model_type": type(model).__name__,
         "feature_count": (
-            len(model.feature_names_in_)
-            if hasattr(model, "feature_names_in_")
-            else None
+            len(features) if features is not None else None
         ),
-        "features": (
-            list(model.feature_names_in_)
-            if hasattr(model, "feature_names_in_")
-            else None
-        ),
+        "features": features,
     }
 
 
@@ -370,11 +370,12 @@ def predict(
 
         input_data[column] = input_data[column].map(mapping)
 
+    # Keep Credit History separate from any numeric credit score.
     input_data["Credit_History"] = input_data[
         "Credit_History"
     ].map(CREDIT_HISTORY_MAP)
 
-    # Match the exact feature order used during model training.
+    # Match the exact feature names and order used during training.
     if hasattr(model, "feature_names_in_"):
         expected_features = list(model.feature_names_in_)
 
@@ -411,15 +412,14 @@ def predict(
             ),
         ) from exc
 
-    # Generate a basic prediction explanation.
-        # Generate prediction explanation
+    # Generate prediction explanation.
     prediction_explanation = (
         "The model predicts that the loan is likely to be approved."
         if prediction == "1"
         else "The model predicts that the loan is likely to be rejected."
     )
 
-    # Save application and prediction
+    # Save application and prediction.
     try:
         repository = ApplicationRepository()
 

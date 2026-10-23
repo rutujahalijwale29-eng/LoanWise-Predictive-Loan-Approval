@@ -20,7 +20,7 @@ function getSavedUser() {
   }
 }
 
-// Accept plain numbers and Indian comma formatting, e.g. 1,00,000.
+// Accept plain numbers and Indian comma formatting.
 function parseAmount(value) {
   const text = String(value ?? "").trim();
 
@@ -38,7 +38,8 @@ function parseAmount(value) {
   if (!validFormat) {
     return {
       valid: false,
-      message: "Enter a valid Loan Amount, e.g. 100000 or 1,00,000.",
+      message:
+        "Enter a valid Loan Amount, e.g. 100000 or 1,00,000.",
     };
   }
 
@@ -81,16 +82,17 @@ function App() {
 
   const { loanForm: loan, setLoanForm: setLoan } = useLoan();
 
-  const {
-    register,
-    handleSubmit,
-    formState: { errors },
-  } = useForm({
-    resolver: yupResolver(loanValidationSchema),
-    defaultValues: loan,
-    mode: "onChange",
-    reValidateMode: "onChange",
-  });
+const {
+  register,
+  handleSubmit,
+  watch,
+  setError,
+  formState: { errors },
+} = useForm({
+  mode: "onChange",
+});
+  
+  const creditScore = watch("Credit_Score", loan.Credit_Score ?? "");
 
   const [result, setResult] = useState("");
   const [predictionExplanation, setPredictionExplanation] = useState("");
@@ -100,7 +102,7 @@ function App() {
   const [messageType, setMessageType] = useState("error");
   const [loading, setLoading] = useState(false);
 
-  // Show notifications when network connectivity changes.
+  // Network notifications.
   useEffect(() => {
     const handleOnline = () => {
       toast.success("Network connection restored.");
@@ -119,8 +121,7 @@ function App() {
     };
   }, []);
 
-  // Synchronize the displayed page with the browser URL.
-  // Protect prediction and admin pages from unauthorized access.
+  // Synchronize routes and protect authenticated pages.
   useEffect(() => {
     const pathToPage = {
       "/": "home",
@@ -172,9 +173,8 @@ function App() {
       admin: "/admin",
     };
 
-    const nextRoute = routes[nextPage] || "/";
     setPage(nextPage);
-    navigate(nextRoute);
+    navigate(routes[nextPage] || "/");
   }
 
   function updateAuth(event) {
@@ -185,13 +185,18 @@ function App() {
   }
 
   function updateLoan(event) {
+    const { name, value, type } = event.target;
+
     setLoan((previous) => ({
       ...previous,
-      [event.target.name]: event.target.value,
+      [name]:
+        type === "number" && value !== ""
+          ? Number(value)
+          : value,
     }));
   }
 
-  // Registration and login.
+  // Login and registration.
   async function handleAuth(event) {
     event.preventDefault();
 
@@ -237,7 +242,6 @@ function App() {
           password: "",
         });
 
-        setMessage("Registration successful. Please log in.");
         toast.success("Registration successful! Please log in.");
         goTo("login");
       } else {
@@ -273,16 +277,14 @@ function App() {
       }
     } catch (error) {
       setMessageType("error");
-      setMessage(
-        error.message || "Unable to connect to LoanWise."
-      );
+      setMessage(error.message || "Unable to connect to LoanWise.");
       toast.error(error.message || "Unable to connect to LoanWise.");
     } finally {
       setLoading(false);
     }
   }
 
-  // Loan prediction using the API service.
+  // Submit a loan prediction.
   async function handlePrediction(validatedLoan) {
     const savedToken = sessionStorage.getItem("loanwise_token");
 
@@ -312,6 +314,30 @@ function App() {
       return;
     }
 
+    // Validate the new numeric score.
+    const score = Number(validatedLoan.Credit_Score);
+
+    if (
+      validatedLoan.Credit_Score === "" ||
+      validatedLoan.Credit_Score === undefined ||
+      !Number.isInteger(score) ||
+      score < 300 ||
+      score > 900
+    ) {
+      const errorMessage =
+        "Enter a whole-number credit score between 300 and 900.";
+      setError("Credit_Score", {
+  type: "manual",
+  message: errorMessage,
+});
+return;
+
+      setMessageType("error");
+      setMessage(errorMessage);
+      toast.error(errorMessage);
+      return;
+    }
+
     setLoading(true);
     setMessage("");
     setMessageType("error");
@@ -327,6 +353,7 @@ function App() {
       CoapplicantIncome: Number(validatedLoan.CoapplicantIncome),
       LoanAmount: parsedLoanAmount.value,
       Loan_Amount_Term: Number(validatedLoan.Loan_Amount_Term),
+      Credit_Score: score,
     };
 
     try {
@@ -366,20 +393,15 @@ function App() {
       setApplicationId(data.application_id ?? null);
       setSubmittedLoan({ ...payload });
 
-      setMessageType("success");
-      setMessage(
+      const successMessage =
         data.application_id !== undefined &&
-          data.application_id !== null
+        data.application_id !== null
           ? `Prediction saved successfully. Application ID: ${data.application_id}`
-          : "Prediction generated successfully."
-      );
+          : "Prediction generated successfully.";
 
-      toast.success(
-        data.application_id !== undefined &&
-          data.application_id !== null
-          ? `Prediction saved! Application ID: ${data.application_id}`
-          : "Prediction generated successfully."
-      );
+      setMessageType("success");
+      setMessage(successMessage);
+      toast.success(successMessage);
     } catch (error) {
       setMessageType("error");
       setResult("");
@@ -434,7 +456,6 @@ function App() {
     ["Dependents", "Dependents", ["0", "1", "2", "3+"]],
     ["Education", "Education", ["Graduate", "Not Graduate"]],
     ["Self_Employed", "Self Employed", ["No", "Yes"]],
-    ["Credit_History", "Credit History", ["Good", "Bad"]],
     ["Property_Area", "Property Area", ["Rural", "Semiurban", "Urban"]],
   ];
 
@@ -514,7 +535,6 @@ function App() {
       {page === "home" && (
         <section className="hero">
           <p className="eyebrow">PREDICTIVE LOAN APPROVAL SYSTEM</p>
-
           <h1>Make sense of your loan prediction.</h1>
 
           <p className="hero-text">
@@ -555,7 +575,6 @@ function App() {
             {page === "register" && (
               <div className="field auth-field">
                 <label htmlFor="full_name">Full Name</label>
-
                 <input
                   id="full_name"
                   name="full_name"
@@ -571,7 +590,6 @@ function App() {
 
             <div className="field auth-field">
               <label htmlFor="email">Email Address</label>
-
               <input
                 id="email"
                 name="email"
@@ -585,7 +603,6 @@ function App() {
 
             <div className="field">
               <label htmlFor="password">Password</label>
-
               <input
                 id="password"
                 name="password"
@@ -593,9 +610,7 @@ function App() {
                 value={authForm.password}
                 onChange={updateAuth}
                 autoComplete={
-                  page === "register"
-                    ? "new-password"
-                    : "current-password"
+                  page === "register" ? "new-password" : "current-password"
                 }
                 minLength={page === "register" ? 8 : undefined}
                 maxLength={128}
@@ -665,7 +680,7 @@ function App() {
                   <p>Complete all required fields.</p>
                 </div>
 
-                <span className="step-label">11 FEATURES</span>
+                <span className="step-label">12 FIELDS</span>
               </div>
 
               <div className="form-grid">
@@ -701,6 +716,76 @@ function App() {
                     </div>
                   );
                 })}
+
+{/* Separate numeric credit score field. */}
+<div className="field">
+  <label htmlFor="Credit_Score">
+    Credit Score (300–900)
+  </label>
+
+  <input
+    id="Credit_Score"
+    type="number"
+    min={300}
+    max={900}
+    step={1}
+    placeholder="Enter credit score"
+    {...register("Credit_Score", {
+      required: "Credit score is required",
+      valueAsNumber: true,
+      validate: (value) => {
+        if (!Number.isFinite(value)) {
+          return "Please enter a valid credit score.";
+        }
+
+        if (!Number.isInteger(value)) {
+          return "Credit score must be a whole number.";
+        }
+
+        if (value < 300 || value > 900) {
+          return "Credit score must be between 300 and 900.";
+        }
+
+        return true;
+      },
+    })}
+    value={creditScore ?? ""}
+    onChange={(event) => {
+      register("Credit_Score").onChange(event);
+      updateLoan(event);
+      void trigger("Credit_Score");
+    }}
+    aria-invalid={Boolean(errors.Credit_Score)}
+    aria-describedby={
+      errors.Credit_Score ? "credit-score-error" : undefined
+    }
+  />
+
+  {errors.Credit_Score && (
+    <p
+      id="credit-score-error"
+      className="field-error"
+      role="alert"
+    >
+      {errors.Credit_Score.message}
+    </p>
+  )}
+
+  {creditScore !== "" &&
+    creditScore !== undefined &&
+    Number.isFinite(Number(creditScore)) &&
+    Number.isInteger(Number(creditScore)) &&
+    Number(creditScore) >= 300 &&
+    Number(creditScore) <= 900 && (
+      <p className="privacy-note">
+        Credit rating:{" "}
+        <strong>
+          {Number(creditScore) >= 650 ? "Good" : "Bad"}
+        </strong>
+      </p>
+    )}
+</div>
+
 
                 {numberFields.map(([name, label, min]) => {
                   const fieldRegistration = register(name);
@@ -794,25 +879,14 @@ function App() {
                   {submittedLoan && (
                     <>
                       <hr />
-
                       <h3>Applicant Details</h3>
 
                       <div className="result-details">
-                        <p>
-                          <strong>Gender:</strong> {submittedLoan.Gender}
-                        </p>
-                        <p>
-                          <strong>Marital Status:</strong> {submittedLoan.Married}
-                        </p>
-                        <p>
-                          <strong>Dependents:</strong> {submittedLoan.Dependents}
-                        </p>
-                        <p>
-                          <strong>Education:</strong> {submittedLoan.Education}
-                        </p>
-                        <p>
-                          <strong>Self Employed:</strong> {submittedLoan.Self_Employed}
-                        </p>
+                        <p><strong>Gender:</strong> {submittedLoan.Gender}</p>
+                        <p><strong>Marital Status:</strong> {submittedLoan.Married}</p>
+                        <p><strong>Dependents:</strong> {submittedLoan.Dependents}</p>
+                        <p><strong>Education:</strong> {submittedLoan.Education}</p>
+                        <p><strong>Self Employed:</strong> {submittedLoan.Self_Employed}</p>
                         <p>
                           <strong>Applicant Income:</strong>{" "}
                           {Number(submittedLoan.ApplicantIncome).toLocaleString("en-IN")}
@@ -825,18 +899,15 @@ function App() {
                           <strong>Loan Amount:</strong>{" "}
                           {Number(submittedLoan.LoanAmount).toLocaleString("en-IN")}
                         </p>
+                        <p><strong>Loan Term:</strong> {submittedLoan.Loan_Amount_Term} months</p>
+                        <p><strong>Credit History:</strong> {submittedLoan.Credit_History}</p>
                         <p>
-                          <strong>Loan Term:</strong>{" "}
-                          {submittedLoan.Loan_Amount_Term} months
+                          <strong>Credit Score:</strong>{" "}
+                          {submittedLoan.Credit_Score}
+                          {" — "}
+                          {submittedLoan.Credit_Score >= 650 ? "Good" : "Bad"}
                         </p>
-                        <p>
-                          <strong>Credit History:</strong>{" "}
-                          {submittedLoan.Credit_History}
-                        </p>
-                        <p>
-                          <strong>Property Area:</strong>{" "}
-                          {submittedLoan.Property_Area}
-                        </p>
+                        <p><strong>Property Area:</strong> {submittedLoan.Property_Area}</p>
                       </div>
                     </>
                   )}
@@ -851,7 +922,6 @@ function App() {
 
             <aside className="info-card">
               <div className="info-icon">✓</div>
-
               <h3>About LoanWise</h3>
 
               <p>

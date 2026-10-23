@@ -50,6 +50,7 @@ def require_admin(
             JWT_SECRET_KEY,
             algorithms=[ALGORITHM],
         )
+
         user_id = int(payload["sub"])
 
     except (jwt.PyJWTError, KeyError, TypeError, ValueError) as exc:
@@ -74,6 +75,7 @@ def require_admin(
             """,
             (user_id,),
         )
+
         user = cursor.fetchone()
 
     except mysql.connector.Error as exc:
@@ -91,13 +93,13 @@ def require_admin(
 
     if not user or not user["is_active"]:
         raise HTTPException(
-            status_code=401,
+            status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User account is inactive or no longer exists.",
         )
 
     if user["role"] != "admin":
         raise HTTPException(
-            status_code=403,
+            status_code=status.HTTP_403_FORBIDDEN,
             detail="Administrator access is required.",
         )
 
@@ -112,16 +114,23 @@ def format_record(record: dict) -> dict:
     """Format database values for JSON responses."""
     result = dict(record)
 
+    # Convert Credit_History from 0/1 to Bad/Good.
     credit_history = result.get("Credit_History")
-    if credit_history is not None:
-        result["Credit_History"] = (
-            "Good" if int(credit_history) == 1 else "Bad"
-        )
 
+    if credit_history is not None:
+        try:
+            result["Credit_History"] = (
+                "Good" if int(credit_history) == 1 else "Bad"
+            )
+        except (TypeError, ValueError):
+            pass
+
+    # Normalize prediction value.
     prediction = str(result.get("prediction") or "").strip().upper()
+
+    # Provide an explanation if an older record has none.
     explanation = result.get("prediction_explanation")
 
-    # Provide a useful explanation for older records.
     if not explanation or not str(explanation).strip():
         if prediction == "Y":
             explanation = (
@@ -141,6 +150,7 @@ def format_record(record: dict) -> dict:
 
     result["prediction_explanation"] = explanation
 
+    # Convert dates and other ISO-compatible values for JSON responses.
     for key, value in result.items():
         if hasattr(value, "isoformat"):
             result[key] = value.isoformat()
@@ -161,6 +171,7 @@ def get_admin_connection():
 
 # --------------------------------------------------
 # Dashboard statistics
+# GET /admin/stats
 # --------------------------------------------------
 
 @router.get("/stats")
@@ -172,7 +183,9 @@ def dashboard_stats(admin=Depends(require_admin)):
         connection = get_admin_connection()
         cursor = connection.cursor(dictionary=True)
 
-        cursor.execute("SELECT COUNT(*) AS total_users FROM users")
+        cursor.execute(
+            "SELECT COUNT(*) AS total_users FROM users"
+        )
         user_stats = cursor.fetchone()
 
         cursor.execute(
@@ -190,6 +203,7 @@ def dashboard_stats(admin=Depends(require_admin)):
             FROM loan_applications
             """
         )
+
         app_stats = cursor.fetchone()
 
         return {
@@ -216,6 +230,7 @@ def dashboard_stats(admin=Depends(require_admin)):
 
 # --------------------------------------------------
 # Registered users
+# GET /admin/users
 # --------------------------------------------------
 
 @router.get("/users")
@@ -258,7 +273,8 @@ def list_users(
 
 # --------------------------------------------------
 # All loan applications
-# Supports keyword search, outcome filter and pagination
+# GET /admin/applications
+# Supports search, outcome filter, and pagination.
 # --------------------------------------------------
 
 @router.get("/applications")
@@ -277,7 +293,7 @@ def list_applications(
 
     if outcome not in {"all", "approved", "rejected", "pending"}:
         raise HTTPException(
-            status_code=400,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail="Outcome must be all, approved, rejected, or pending.",
         )
 
@@ -290,6 +306,7 @@ def list_applications(
 
         if search.strip():
             keyword = f"%{search.strip()}%"
+
             conditions.append(
                 """
                 (
@@ -303,12 +320,15 @@ def list_applications(
                 )
                 """
             )
+
             params.extend([keyword] * 7)
 
         if outcome == "approved":
             conditions.append("a.prediction = 'Y'")
+
         elif outcome == "rejected":
             conditions.append("a.prediction = 'N'")
+
         elif outcome == "pending":
             conditions.append(
                 "(a.prediction IS NULL OR TRIM(a.prediction) = '')"
@@ -320,7 +340,7 @@ def list_applications(
             else ""
         )
 
-        # Count all matching applications for pagination.
+        # Count matching applications for pagination.
         cursor.execute(
             f"""
             SELECT COUNT(*) AS total
@@ -330,11 +350,12 @@ def list_applications(
             """,
             tuple(params),
         )
+
         total = int(cursor.fetchone()["total"])
 
         offset = (page - 1) * page_size
 
-        # Return the current page with fields used by the admin table.
+        # Retrieve the current page of applications.
         cursor.execute(
             f"""
             SELECT
@@ -366,7 +387,9 @@ def list_applications(
             "total": total,
             "page": page,
             "page_size": page_size,
-            "total_pages": (total + page_size - 1) // page_size,
+            "total_pages": (
+                (total + page_size - 1) // page_size
+            ),
         }
 
     except mysql.connector.Error as exc:
@@ -418,7 +441,7 @@ def get_application_details(
 
         if record is None:
             raise HTTPException(
-                status_code=404,
+                status_code=status.HTTP_404_NOT_FOUND,
                 detail="Application not found.",
             )
 
