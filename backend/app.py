@@ -41,6 +41,7 @@ app = FastAPI(title="LoanWise API")
 app.include_router(auth_router)
 app.include_router(admin_router)
 
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -51,9 +52,10 @@ app.add_middleware(
         for port in range(5173, 5177)
     ],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
+
 
 
 # --------------------------------------------------
@@ -400,24 +402,73 @@ def predict(
     try:
         prediction_value = model.predict(input_data)[0]
         prediction = str(int(prediction_value))
-
         if prediction not in {"0", "1"}:
             raise ValueError("Unexpected model prediction value.")
 
     except (ValueError, TypeError, KeyError) as exc:
         raise HTTPException(
             status_code=422,
-            detail=(
-                "Unable to generate a prediction for the supplied data."
-            ),
+            detail="Unable to generate a prediction for the supplied data.",
         ) from exc
 
-    # Generate prediction explanation.
-    prediction_explanation = (
-        "The model predicts that the loan is likely to be approved."
-        if prediction == "1"
-        else "The model predicts that the loan is likely to be rejected."
-    )
+# Generate prediction explanation using the model's actual output.
+    try:
+        probabilities = model.predict_proba(input_data)[0]
+        classes = list(model.classes_)
+        approval_index = classes.index(1)
+        approval_probability = float(probabilities[approval_index])
+
+        if prediction == "1":
+            prediction_explanation = (
+                "The model predicts that the loan is likely to be approved. "
+                f"Estimated approval probability: {approval_probability:.1%}. "
+                "This is a model estimate, not a guarantee of approval."
+            )
+        else:
+            prediction_explanation = (
+                "The model predicts that the loan is likely to be rejected. "
+                f"Estimated approval probability: {approval_probability:.1%}. "
+                "This probability is an estimate, not the official reason "
+                "for rejection. Contact your lender for the specific reasons."
+            )
+
+    except (ValueError, TypeError, AttributeError, IndexError):
+        if prediction == "1":
+            prediction_explanation = (
+                "The model predicts that the loan is likely to be approved."
+            )
+        else:
+            prediction_explanation = (
+                "The model predicts that the loan is likely to be rejected. "
+                "Contact your lender for the specific reasons."
+            )
+
+    # Save application and prediction.
+    try:
+        repository = ApplicationRepository()
+
+        application_id = repository.create_application(
+            user_id=user_id,
+            application=application_data,
+            prediction=prediction,
+            prediction_explanation=prediction_explanation,
+        )
+
+    except Exception as exc:
+        print(f"Failed to save prediction: {exc}")
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to save the prediction to the database.",
+        ) from exc
+
+    return {
+        "application_id": application_id,
+        "prediction": prediction,
+        "prediction_explanation": prediction_explanation,
+        "message": "Prediction generated and saved successfully",
+    }
+
+
 
     # Save application and prediction.
     try:

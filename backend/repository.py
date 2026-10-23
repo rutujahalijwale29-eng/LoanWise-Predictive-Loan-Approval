@@ -9,10 +9,10 @@ class ApplicationRepository:
 
     def create_application(
         self,
-        user_id: int,
-        application: dict,
-        prediction: str,
-        prediction_explanation: str,
+        user_id,
+        application,
+        prediction,
+        prediction_explanation="",
     ):
         connection = None
         cursor = None
@@ -250,7 +250,7 @@ class ApplicationRepository:
 
             offset = (page - 1) * page_size
 
-            # SELECT * returns all stored applicant inputs and explanation.
+            # Return stored inputs and prediction explanation.
             cursor.execute(
                 f"""
                 SELECT *
@@ -276,6 +276,40 @@ class ApplicationRepository:
                     (total_records + page_size - 1) // page_size
                 ),
             }
+
+        finally:
+            if cursor is not None:
+                cursor.close()
+
+            if connection is not None and connection.is_connected():
+                connection.close()
+
+    def delete_application(self, application_id: int) -> bool:
+        """Delete one loan application by its ID."""
+        connection = None
+        cursor = None
+
+        try:
+            connection = get_db_connection()
+            cursor = connection.cursor()
+
+            cursor.execute(
+                """
+                DELETE FROM loan_applications
+                WHERE id = %s
+                """,
+                (application_id,),
+            )
+
+            deleted = cursor.rowcount > 0
+            connection.commit()
+
+            return deleted
+
+        except Exception:
+            if connection is not None and connection.is_connected():
+                connection.rollback()
+            raise
 
         finally:
             if cursor is not None:
@@ -315,7 +349,9 @@ class ApplicationRepository:
                 else "Bad"
             )
 
-        prediction = str(record.get("prediction") or "").strip().upper()
+        prediction = str(
+            record.get("prediction") or ""
+        ).strip().upper()
 
         # Make the prediction readable without changing the database.
         if prediction == "Y":

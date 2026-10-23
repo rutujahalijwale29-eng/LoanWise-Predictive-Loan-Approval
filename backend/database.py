@@ -1,27 +1,24 @@
 
-from pathlib import Path
 import os
 
 import mysql.connector
-from dotenv import load_dotenv
-
-BASE_DIR = Path(__file__).resolve().parent.parent
-ENV_FILE = BASE_DIR / ".env"
-
-load_dotenv(ENV_FILE, override=True)
 
 
 def get_db_connection():
-    required_settings = ["DB_USER", "DB_PASSWORD"]
+    """Create a MySQL connection using environment variables."""
 
-    missing = [
-        key for key in required_settings
-        if not os.getenv(key)
+    required_vars = ("DB_USER", "DB_PASSWORD")
+
+    missing_vars = [
+        name
+        for name in required_vars
+        if not os.getenv(name)
     ]
 
-    if missing:
+    if missing_vars:
         raise RuntimeError(
-            f"Missing database configuration: {', '.join(missing)}"
+            "Missing required database environment variables: "
+            + ", ".join(missing_vars)
         )
 
     return mysql.connector.connect(
