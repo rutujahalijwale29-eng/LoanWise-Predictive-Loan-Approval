@@ -10,9 +10,7 @@ def get_db_connection():
     required_vars = ("DB_USER", "DB_PASSWORD")
 
     missing_vars = [
-        name
-        for name in required_vars
-        if not os.getenv(name)
+        name for name in required_vars if not os.getenv(name)
     ]
 
     if missing_vars:
