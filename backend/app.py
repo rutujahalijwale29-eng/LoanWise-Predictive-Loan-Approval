@@ -1,4 +1,3 @@
-
 from pathlib import Path
 from typing import Literal
 
@@ -41,7 +40,6 @@ app = FastAPI(title="LoanWise API")
 app.include_router(auth_router)
 app.include_router(admin_router)
 
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -55,7 +53,6 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
 )
-
 
 
 # --------------------------------------------------
@@ -372,7 +369,7 @@ def predict(
 
         input_data[column] = input_data[column].map(mapping)
 
-    # Keep Credit History separate from any numeric credit score.
+    # Convert credit history to its numeric representation.
     input_data["Credit_History"] = input_data[
         "Credit_History"
     ].map(CREDIT_HISTORY_MAP)
@@ -402,6 +399,7 @@ def predict(
     try:
         prediction_value = model.predict(input_data)[0]
         prediction = str(int(prediction_value))
+
         if prediction not in {"0", "1"}:
             raise ValueError("Unexpected model prediction value.")
 
@@ -411,12 +409,14 @@ def predict(
             detail="Unable to generate a prediction for the supplied data.",
         ) from exc
 
-# Generate prediction explanation using the model's actual output.
+    # Generate prediction explanation.
     try:
         probabilities = model.predict_proba(input_data)[0]
         classes = list(model.classes_)
         approval_index = classes.index(1)
-        approval_probability = float(probabilities[approval_index])
+        approval_probability = float(
+            probabilities[approval_index]
+        )
 
         if prediction == "1":
             prediction_explanation = (
@@ -432,7 +432,12 @@ def predict(
                 "for rejection. Contact your lender for the specific reasons."
             )
 
-    except (ValueError, TypeError, AttributeError, IndexError):
+    except (
+        ValueError,
+        TypeError,
+        AttributeError,
+        IndexError,
+    ):
         if prediction == "1":
             prediction_explanation = (
                 "The model predicts that the loan is likely to be approved."
@@ -443,7 +448,7 @@ def predict(
                 "Contact your lender for the specific reasons."
             )
 
-    # Save application and prediction.
+    # Save application and prediction once.
     try:
         repository = ApplicationRepository()
 
@@ -456,34 +461,6 @@ def predict(
 
     except Exception as exc:
         print(f"Failed to save prediction: {exc}")
-        raise HTTPException(
-            status_code=500,
-            detail="Unable to save the prediction to the database.",
-        ) from exc
-
-    return {
-        "application_id": application_id,
-        "prediction": prediction,
-        "prediction_explanation": prediction_explanation,
-        "message": "Prediction generated and saved successfully",
-    }
-
-
-
-    # Save application and prediction.
-    try:
-        repository = ApplicationRepository()
-
-        application_id = repository.create_application(
-            user_id=user_id,
-            application=application_data,
-            prediction=prediction,
-            prediction_explanation=prediction_explanation,
-        )
-
-    except Exception as exc:
-        print(f"Failed to save prediction: {exc}")
-
         raise HTTPException(
             status_code=500,
             detail="Unable to save the prediction to the database.",
